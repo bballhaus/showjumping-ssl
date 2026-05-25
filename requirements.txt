@@ -1,5 +1,8 @@
-torch>=2.2
-torchvision>=0.17
+# NOTE: torch + torchvision are intentionally NOT pinned here.
+# Colab ships them preinstalled with CUDA support; `pip install torch` from
+# PyPI pulls the CPU wheel and silently breaks GPU training. If you need a
+# local install, use:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ultralytics>=8.1
 yt-dlp>=2024.4.9
 opencv-python>=4.9
