@@ -32,19 +32,31 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=Path("data/annotations/fences.csv"))
     args = ap.parse_args()
 
+    if not args.clips.exists():
+        raise SystemExit(f"[annotate] --clips path does not exist: {args.clips}")
+    all_clips = sorted(args.clips.glob("*.mp4"))
+    if not all_clips:
+        raise SystemExit(
+            f"[annotate] no .mp4 files found in {args.clips}.\n"
+            f"           If this is a Google Drive path, make sure Drive Desktop "
+            f"is installed and the folder has synced locally.")
+    print(f"[annotate] found {len(all_clips)} clips in {args.clips}")
+
     args.out.parent.mkdir(parents=True, exist_ok=True)
     seen = set()
     if args.out.exists():
         with args.out.open() as f:
             for row in csv.DictReader(f):
                 seen.add(row["clip_id"])
+    if seen:
+        print(f"[annotate] resuming — {len(seen)} clips already annotated")
 
     with args.out.open("a", newline="") as f:
         writer = csv.writer(f)
         if not seen:
             writer.writerow(["clip_id", "x1", "y1", "x2", "y2", "pole_count"])
 
-        for clip in sorted(args.clips.glob("*.mp4")):
+        for clip in all_clips:
             if clip.stem in seen:
                 continue
             frame = grab_middle_frame(clip)
