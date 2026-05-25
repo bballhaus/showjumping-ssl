@@ -90,6 +90,18 @@ class ColabAnnotator:
             return None
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+    def _all_frames(self, clip: Path) -> list:
+        """Decode every frame so the slider can scrub. ~32 frames at 320px is cheap."""
+        cap = cv2.VideoCapture(str(clip))
+        frames = []
+        while True:
+            ok, f = cap.read()
+            if not ok:
+                break
+            frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+        cap.release()
+        return frames
+
     # -- UI ------------------------------------------------------------------
 
     def _build_widgets(self):
@@ -102,16 +114,32 @@ class ColabAnnotator:
         self.btn_quit = widgets.Button(description="Quit", button_style="danger",
                                        icon="times")
         self.status = widgets.HTML(value="")
+        # Frame scrubber. Camera tracks the horse, so the fence may only be
+        # visible at one end of the 2-second clip. Slider value = frame index.
+        self.frame_slider = widgets.IntSlider(
+            value=0, min=0, max=0, step=1,
+            description="Frame:", continuous_update=False,
+            layout=widgets.Layout(width="500px"),
+        )
 
         self.btn_vert.on_click(lambda _: self._save(pole_count=1))
         self.btn_oxer.on_click(lambda _: self._save(pole_count=2))
         self.btn_skip.on_click(lambda _: self._skip())
         self.btn_undo.on_click(lambda _: self._clear_box())
         self.btn_quit.on_click(lambda _: self._quit())
+        self.frame_slider.observe(self._on_frame_change, names="value")
 
         self.toolbar = widgets.HBox([
             self.btn_vert, self.btn_oxer, self.btn_skip, self.btn_undo, self.btn_quit,
         ])
+
+    def _on_frame_change(self, change):
+        if not getattr(self, "frames", None):
+            return
+        i = int(change["new"])
+        if 0 <= i < len(self.frames) and self.ax is not None and self.ax.images:
+            self.ax.images[0].set_data(self.frames[i])
+            self.fig.canvas.draw_idle()
 
     def _on_select(self, eclick, erelease):
         x1, y1 = eclick.xdata, eclick.ydata
@@ -147,6 +175,7 @@ class ColabAnnotator:
 
     def start(self):
         display(self.toolbar)
+        display(self.frame_slider)
         display(self.status)
         self._show_clip()
 
@@ -159,11 +188,20 @@ class ColabAnnotator:
             return
 
         clip = self.queue[self.idx]
-        frame = self._middle_frame(clip)
-        if frame is None:
+        self.frames = self._all_frames(clip)
+        if not self.frames:
             self.idx += 1
             self._show_clip()
             return
+
+        # Slider spans the full clip; start at the middle (best guess for jump).
+        n = len(self.frames)
+        mid = n // 2
+        # Suppress the observer callback during setup so changing the range doesn't fire.
+        self.frame_slider.unobserve(self._on_frame_change, names="value")
+        self.frame_slider.max = n - 1
+        self.frame_slider.value = mid
+        self.frame_slider.observe(self._on_frame_change, names="value")
 
         if self.fig is None:
             self.fig, self.ax = plt.subplots(figsize=(9, 5))
@@ -171,9 +209,10 @@ class ColabAnnotator:
             self.fig.canvas.header_visible = False
             self.fig.canvas.footer_visible = False
         self.ax.clear()
-        self.ax.imshow(frame)
-        self.ax.set_title(f"Drag a box around the fence — {clip.name}",
-                          fontsize=10)
+        self.ax.imshow(self.frames[mid])
+        self.ax.set_title(
+            f"Scrub the slider to find the fence, then drag a box — {clip.name}",
+            fontsize=10)
         self.ax.set_xticks([]); self.ax.set_yticks([])
 
         # Replace the selector (creating a new one each clip is the safe path
