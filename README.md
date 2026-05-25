@@ -16,7 +16,6 @@ project/
 ├── notebooks/
 │   └── colab_milestone.ipynb  # end-to-end runnable on Colab Pro
 ├── milestone/
-│   ├── milestone.tex          # 2-page PDF source
 │   └── figures/               # generated figures
 ├── data/
 │   ├── raw/         # downloaded YouTube videos
