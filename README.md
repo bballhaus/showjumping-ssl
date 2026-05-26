@@ -15,7 +15,8 @@ project/
 │   └── viz/         # t-SNE, detection overlays, training curves
 ├── notebooks/
 │   └── colab_milestone.ipynb  # end-to-end runnable on Colab Pro
-├── milestone/
+├── milestone_overleaf/
+│   ├── milestone.tex          # 2-page PDF source (submitted)
 │   └── figures/               # generated figures
 ├── data/
 │   ├── raw/         # downloaded YouTube videos
@@ -49,11 +50,11 @@ python -m src.preprocess.run_pipeline --clips data/clips --out data/annotations/
 python -m src.ssl.train --clips data/clips --epochs 30 --out checkpoints/
 
 # 5. Generate figures
-python -m src.viz.make_figures --ckpt checkpoints/encoder.pt --out milestone/figures/
+python -m src.viz.make_figures --ckpt checkpoints/encoder.pt --out milestone_overleaf/figures/
 ```
 
 ## Milestone PDF
 
 ```bash
-cd milestone && pdflatex milestone.tex
+cd milestone_overleaf && pdflatex milestone.tex
 ```
