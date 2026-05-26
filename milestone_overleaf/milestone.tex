@@ -52,13 +52,13 @@
 
 \section{Technical Progress}
 
-I built the milestone-stage pipeline end-to-end on Colab Pro (A100): YouTube scraping, 2-second clip segmentation, YOLOv8 horse-presence filtering, hand-annotated fence boxes, geometric takeoff-distance extraction, and a self-supervised R(2+1)D-18 video encoder with InfoNCE contrastive and 6-way temporal-order objectives. The downstream classifier and regressor heads from the proposal are not yet trained --- those wait on the week-3 expansion of the labeled set. All results below use encoder embeddings, hand-drawn fence boxes, and the geometric $d$ estimator.
+I built the milestone-stage pipeline end-to-end on Colab Pro (A100): YouTube scraping, 2-second clip segmentation, YOLOv8 horse-presence filtering, hand-annotated fence boxes, geometric takeoff-distance extraction, and a self-supervised R(2+1)D-18 video encoder with InfoNCE contrastive and 6-way temporal-order objectives. Claude Code was used to write the in-Colab annotator, to write the YouTube scraping script, and to write code documentation (comments and ReadMe). The downstream classifier and regressor heads from the proposal are not yet trained because they wait on the week-3 expansion of the labeled set. All results below use encoder embeddings, hand-drawn fence boxes, and the geometric $d$ estimator.
 
-\paragraph{Data} I scraped 6 full Grand Prix highlight reels (FEI World Cup, Longines GCT, CSI 3*) at 1.50\,m, totaling roughly 12 hours of footage. A 30-second-stride window cutter produced $\mathbf{2{,}223}$ raw 2-second clips at 16\,fps, $320\times320$. A YOLOv8 horse-presence filter (keep clips with a horse visible in $\geq40\%$ of sampled frames) reduced this to $\mathbf{1{,}121}$ jumping clips and moved the rest --- crowd shots, course walks, slow-motion replays, interviews --- into a rejected pool for inspection. From these, I hand-annotated $\mathbf{39}$ fence bounding boxes (22 oxers, 17 verticals) using an inline matplotlib + ipywidgets annotator built for Colab; each box was drawn on a frame I scrubbed to manually rather than the clip midpoint, because broadcast cameras track the horse, not the fence.
+\paragraph{Data} I scraped 6 full 1.50\,m Grand Prix competitions at multiple venues (Wellington International, Tryon, Club de Campo Villa de Madrid), totaling roughly 18.5 hours of footage. A 30-second-stride window cutter produced 2,223 raw 2-second clips at 16\,fps, $320\times320$. A YOLOv8 horse-presence filter (keep clips with a horse visible in $\geq40\%$ of sampled frames) reduced this to 1,121 jumping clips and moved the rest (crowd shots, course walks, slow-motion replays, interviews) into a rejected pool for inspection. From these, I hand-annotated 39 fence bounding boxes (22 oxers, 17 verticals) using an inline matplotlib + ipywidgets annotator built for Colab; each box was drawn on a frame I scrubbed to manually rather than the clip midpoint, because broadcast cameras track the horse, not the fence.
 
-\paragraph{Detection and geometric \texorpdfstring{$d$}{d}} Pretrained COCO YOLOv8 (the \texttt{horse} class) detects the horse every 2nd frame. The takeoff frame is found as the sharpest downward-to-upward reversal of the horse-box bottom edge in the second half of each clip --- a robust proxy for the hoof leaving the ground. The standard 3.5\,m top pole on the fence box gives meters-per-pixel as $\mathrm{mpp} = 3.5/w_{\mathrm{fence}}$. Takeoff distance $d$ is then the Euclidean ground distance between the takeoff-frame horse-box bottom-center (hoof line) and the fence base, scaled by mpp. Fence type (vertical vs.\ oxer) is currently a width-to-height heuristic with a pole-count override from the annotator, to be replaced in week 3 by a small CNN once $\geq 50$ typed labels are available.
+\paragraph{Detection and Geometry} Pretrained COCO YOLOv8 (the \texttt{horse} class) detects the horse every 2nd frame. The takeoff frame is found as the sharpest downward-to-upward reversal of the horse-box bottom edge in the second half of each clip, a robust proxy for the hoof leaving the ground. The standard 3.5\,m top pole on the fence box gives meters-per-pixel as $\mathrm{mpp} = 3.5/w_{\mathrm{fence}}$. Takeoff distance $d$ is then the Euclidean ground distance between the takeoff-frame horse-box bottom-center (hoof line) and the fence base, scaled by mpp. Fence type (vertical vs.\ oxer) is currently a width-to-height heuristic with a pole-count override from the annotator, to be replaced in week 3 by a small CNN once $\geq 50$ typed labels are available.
 
-\paragraph{Self-supervised pretraining} Encoder: torchvision R(2+1)D-18 trunk with a 2-layer MLP projector to 128-dim. Two pretext objectives are trained jointly: (a) InfoNCE on two photometric- and flip-augmented views of the same clip ($\tau=0.1$), with the rest of the batch as negatives, and (b) 6-way classification of the permutation applied to three disjoint 4-frame sub-clips, loss weight $\lambda_{\mathrm{order}}=0.3$. Optimizer: AdamW (lr $10^{-3}$, weight decay $10^{-4}$), cosine schedule, batch 16, 10 epochs on A100.
+\paragraph{Self-supervised pretraining} Encoder: torchvision R(2+1)D-18 trunk with a 2-layer MLP projector to 128-dim. Two pretext objectives are trained jointly: InfoNCE on two photometric- and flip-augmented views of the same clip ($\tau=0.1$), with the rest of the batch as negatives, and 6-way classification of the permutation applied to three disjoint 4-frame sub-clips, loss weight $\lambda_{\mathrm{order}}=0.3$. Optimizer: AdamW (lr $10^{-3}$, weight decay $10^{-4}$), cosine schedule, batch 16, 10 epochs on A100.
 
 \section{Results and Visualizations}
 
@@ -76,7 +76,7 @@ I built the milestone-stage pipeline end-to-end on Colab Pro (A100): YouTube scr
   \end{subfigure}\hfill
   \begin{subfigure}{0.32\textwidth}
     \includegraphics[width=\linewidth]{figures/tsne_type.png}
-    \caption{t-SNE of encoder embeddings colored by hand-annotated fence type. Colored points show no clean vertical/oxer separation; most points are grey (un-annotated).}
+    \caption{t-SNE of encoder embeddings colored by hand-annotated fence type. Colored points show no clean vertical/oxer separation; most points are orange (un-annotated).}
     \label{fig:tsne_type}
   \end{subfigure}
 \end{figure}
@@ -85,7 +85,7 @@ I built the milestone-stage pipeline end-to-end on Colab Pro (A100): YouTube scr
   \centering
   \begin{subfigure}{0.48\textwidth}
     \includegraphics[width=\linewidth]{figures/tsne_video.png}
-    \caption{Same t-SNE, recolored by source broadcast. Clear per-video clusters --- the dominant axis of variation in the embedding space is venue (arena, lighting, footing, crowd), not approach quality. This identifies the main bottleneck for week 3.}
+    \caption{Same t-SNE, recolored by source broadcast. Clear per-video clusters, the dominant axis of variation in the embedding space is venue (arena, lighting, footing, crowd) instead of approach quality to be addressed in the next two weeks.}
     \label{fig:tsne_video}
   \end{subfigure}\hfill
   \begin{subfigure}{0.48\textwidth}
@@ -95,11 +95,11 @@ I built the milestone-stage pipeline end-to-end on Colab Pro (A100): YouTube scr
   \end{subfigure}
 \end{figure}
 
-\paragraph{What the figures say} Figure~\ref{fig:loss} confirms both SSL objectives optimize cleanly, so the encoder is genuinely picking up motion direction rather than appearance. Figure~\ref{fig:d} shows the geometric estimator produces values in the physically reasonable $1$--$3$\,m range. Figure~\ref{fig:tsne_type} shows the embedding does \emph{not} cleanly separate verticals from oxers --- but Figure~\ref{fig:tsne_video} explains why: the dominant variation is which broadcast a clip came from, not approach quality. This is the key empirical finding of the milestone. Figure~\ref{fig:det} shows representative geometric successes and the main failure mode ($d$ inflation under oblique angles).
+\paragraph{Figures} Figure~\ref{fig:loss} confirms both SSL objectives optimize cleanly, so the encoder is picking up motion direction rather than appearance. Figure~\ref{fig:d} shows the geometric estimator produces values in the physically reasonable $1$--$3$\,m range. Figure~\ref{fig:tsne_type} shows the embedding does \emph{not} cleanly separate verticals from oxers, but Figure~\ref{fig:tsne_video} explains that the dominant variation is which broadcast a clip came from. This is the key empirical finding of the milestone. Figure~\ref{fig:det} shows representative geometric successes and the main failure mode ($d$ inflation under oblique angles).
 
 \section{Deviations from the Proposal}
 
-\paragraph{SSL collapsed from scratch} A 10-epoch run on 1{,}121 clips drove both losses down monotonically but yielded representational collapse (nearest-neighbor cosine similarity $\approx 0.97$ across unrelated clips). I executed the proposal's planned Kinetics-400 fallback --- the pretrained R(2+1)D-18 encoder used directly --- and the figures above all use these embeddings.
+\paragraph{SSL collapsed from scratch} A 10-epoch run on 1{,}121 clips drove both losses down monotonically but yielded representational collapse (nearest-neighbor cosine similarity $\approx 0.97$ across unrelated clips). I executed the proposal's planned Kinetics-400 fallback (the pretrained R(2+1)D-18 encoder used directly) and the figures above all use these embeddings.
 
 \paragraph{Venue confound} All 39 hand-annotated fences are from one video, picked for camera quality during a single annotation session. Combined with the venue-clustered embedding space, this blocks any approach-quality claim until the labeled set spans venues.
 
@@ -110,10 +110,12 @@ I built the milestone-stage pipeline end-to-end on Colab Pro (A100): YouTube scr
 \section{Updated Timeline and Plan}
 
 \begin{enumerate}
-  \item \textbf{Week 3 (Cross-venue labels \& SSL fix).} Annotate $\sim 60$ more fence boxes spanning all 6 videos (target: 100 total). Fine-tune YOLOv8 on those boxes for automatic detection. Re-run SSL pretraining from Kinetics initialization with a venue-balanced sampler; add a domain-adversarial head to actively suppress venue identity. Train the proposal's three baselines (from-scratch supervised, ImageNet 2D-CNN, type-only logistic regression).
-  \item \textbf{Week 4 (Analysis \& writeup).} Sample-efficiency curves at $n \in \{25, 50, 100, 200\}$, ablations on each pretext task and on type conditioning, $d$-MAE reported per fence type, t-SNE colored by outcome / $d$ / type, final report and presentation. Submit by the course deadline.
+  \item \textbf{Week 3 (Cross-venue labels \& SSL fix).} Annotate $\sim 110$ more fence boxes spanning all 6 videos (target: 150 total). Fine-tune YOLOv8 on those boxes for automatic detection. Re-run SSL pretraining from Kinetics initialization with a venue-balanced sampler; add a domain-adversarial head to actively suppress venue identity. Train the proposal's three baselines (from-scratch supervised, ImageNet 2D-CNN, type-only logistic regression).
+  \item \textbf{Week 4 (Analysis \& writeup).} Sample-efficiency curves at $n \in \{25, 50, 100, 200\}$, ablations on each pretext task and on type conditioning, $d$-MAE reported per fence type, t-SNE colored by outcome / $d$ / type, write final report and presentation. 
 \end{enumerate}
 
-\paragraph{Risks watched} (i) Cross-venue annotation is the rate-limiter; budgeted 90\,min/day. (ii) Domain-adversarial training can be unstable on small datasets --- I will fall back to a simpler arena-color jitter augmentation if it diverges. (iii) Side-view camera filtering will reduce the labeled-clip pool further; the clip-stride is tunable to compensate.
+\paragraph{Risks watched} Cross-venue annotation is the rate-limiter. Domain-adversarial training can be unstable on small datasets, so I will fall back to a simpler arena-color jitter augmentation if it diverges. Side-view camera filtering will reduce the labeled-clip pool further; the clip-stride is tunable to compensate.
+
+\paragraph{Link to Codebase:} https://github.com/bballhaus/showjumping-ssl
 
 \end{document}
