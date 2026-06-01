@@ -69,6 +69,7 @@ class ColabAnnotator:
         self.seen = self._load_seen()
         self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
         self.idx = 0
+        self.session = 0
         self.frames: list = []
 
         if not self.queue:
@@ -154,11 +155,11 @@ class ColabAnnotator:
         self._update_status()
 
     def _update_status(self):
-        n_done = len(self.seen)
-        total = n_done + len(self.queue) - self.idx
         self.status.value = (
-            f"<b>{n_done}/{total}</b> annotated &nbsp;|&nbsp; "
-            f"<code>{self.queue[self.idx].name}</code> &nbsp;|&nbsp; "
+            f"<b>&#9989; {self.session} saved this session</b> &nbsp;|&nbsp; "
+            f"{len(self.seen)} total in fences.csv &nbsp;|&nbsp; "
+            f"clip {self.idx + 1}/{len(self.queue)} in queue &nbsp;|&nbsp; "
+            f"<code>{self.queue[self.idx].name}</code><br>"
             f"scrub to the fence, pick vertical/oxer, drag a box, click Submit (or Skip)")
 
     def _save(self):
@@ -173,6 +174,7 @@ class ColabAnnotator:
         clip = self.queue[self.idx]
         self._append_row(clip.stem, (x1, y1, x2, y2), pole_count, int(self.frame_slider.value))
         self.seen.add(clip.stem)
+        self.session += 1
         self.idx += 1
         self._show_clip()
 
@@ -210,6 +212,7 @@ class OutcomeAnnotator:
         self.seen = self._load_seen()
         self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
         self.idx = 0
+        self.session = 0
         self.frames: list = []
         if not self.queue:
             print(f"[outcome] all {len(all_clips)} clips already labeled in {self.out_csv}")
@@ -289,17 +292,18 @@ class OutcomeAnnotator:
         self._update_status()
 
     def _update_status(self):
-        n_done = len(self.seen)
-        total = n_done + len(self.queue) - self.idx
         self.status.value = (
-            f"<b>{n_done}/{total}</b> labeled &nbsp;|&nbsp; "
-            f"<code>{self.queue[self.idx].name}</code> &nbsp;|&nbsp; "
+            f"<b>&#9989; {self.session} labeled this session</b> &nbsp;|&nbsp; "
+            f"{len(self.seen)} total in outcomes.csv &nbsp;|&nbsp; "
+            f"clip {self.idx + 1}/{len(self.queue)} in queue &nbsp;|&nbsp; "
+            f"<code>{self.queue[self.idx].name}</code><br>"
             f"scrub to watch the jump, then pick the outcome")
 
     def _save(self, outcome: str):
         clip = self.queue[self.idx]
         self._append_row(clip.stem, outcome)
         self.seen.add(clip.stem)
+        self.session += 1
         self.idx += 1
         self._show_clip()
 
