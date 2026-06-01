@@ -39,8 +39,8 @@ def _all_frames_bgr(clip: Path) -> list:
     return frames
 
 
-def _jpeg_bytes(frame_bgr) -> bytes:
-    ok, buf = cv2.imencode(".jpg", frame_bgr)
+def _jpeg_bytes(frame_bgr, quality: int = 70) -> bytes:
+    ok, buf = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
     return buf.tobytes() if ok else b""
 
 
