@@ -1,34 +1,54 @@
-"""Inline Colab annotator for fence boxes.
+"""Inline Colab annotators (fence boxes + jump outcomes).
 
-Drag a rectangle on the displayed frame, then click one of the label buttons
-(Vertical / Oxer / Skip). The annotation is appended to fences.csv and the
-next clip loads automatically.
+Both annotators avoid the fragile ipympl / ``%matplotlib widget`` backend so the
+final notebook runs top-to-bottom with no kernel restart:
+
+* ``ColabAnnotator``  - drag a box with ``jupyter_bbox_widget`` (a Colab-native
+  canvas widget), pick vertical/oxer, scrub frames with a slider.
+* ``OutcomeAnnotator`` - a plain ``ipywidgets.Image`` + buttons, no matplotlib.
 
 Usage (in a Colab cell):
-    !pip install -q ipympl
+    !pip install -q jupyter_bbox_widget ipywidgets
     from google.colab import output
     output.enable_custom_widget_manager()
-    %matplotlib widget
 
     from src.preprocess.annotate_colab import ColabAnnotator
-    ann = ColabAnnotator('data/clips', 'data/annotations/fences.csv', limit=30)
+    ann = ColabAnnotator('data/clips', 'data/annotations/fences.csv', limit=120)
     ann.start()
 """
 
 from __future__ import annotations
 
 import csv
+import tempfile
 from pathlib import Path
 
 import cv2
-import ipywidgets as widgets
-import matplotlib.pyplot as plt
-from IPython.display import display
-from matplotlib.widgets import RectangleSelector
+
+
+def _all_frames_bgr(clip: Path) -> list:
+    """Decode every frame (BGR, cv2-native) so the slider can scrub."""
+    cap = cv2.VideoCapture(str(clip))
+    frames = []
+    while True:
+        ok, f = cap.read()
+        if not ok:
+            break
+        frames.append(f)
+    cap.release()
+    return frames
+
+
+def _jpeg_bytes(frame_bgr) -> bytes:
+    ok, buf = cv2.imencode(".jpg", frame_bgr)
+    return buf.tobytes() if ok else b""
 
 
 class ColabAnnotator:
+    """Fence-box annotator built on jupyter_bbox_widget (no ipympl)."""
+
     HEADER = ["clip_id", "x1", "y1", "x2", "y2", "pole_count", "frame"]
+    CLASSES = ["vertical", "oxer"]
 
     def __init__(self, clips_dir: str, out_csv: str = "data/annotations/fences.csv",
                  limit: int = 30, prefer_filtered: bool = True):
@@ -44,16 +64,14 @@ class ColabAnnotator:
         self._init_csv()
         self.seen = self._load_seen()
         self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
+        self.idx = 0
+        self.frames: list = []
+        self._tmpdir = Path(tempfile.mkdtemp(prefix="fence_ann_"))
+        self._frame_paths: dict[int, Path] = {}
+
         if not self.queue:
             print(f"[annotate] all {len(all_clips)} clips already annotated in {self.out_csv}")
             return
-
-        self.idx = 0
-        self.current_box: tuple[float, float, float, float] | None = None
-        self.fig = None
-        self.ax = None
-        self.selector = None
-
         self._build_widgets()
 
     # -- CSV plumbing --------------------------------------------------------
@@ -63,176 +81,107 @@ class ColabAnnotator:
             with self.out_csv.open("w", newline="") as f:
                 csv.writer(f).writerow(self.HEADER)
 
-    def _load_seen(self) -> set[str]:
+    def _load_seen(self) -> set:
         seen = set()
         with self.out_csv.open() as f:
             for row in csv.DictReader(f):
                 seen.add(row["clip_id"])
         return seen
 
-    def _append_row(self, clip_id: str, box, pole_count, frame) -> None:
+    def _append_row(self, clip_id, box, pole_count, frame) -> None:
         x1, y1, x2, y2 = box
         with self.out_csv.open("a", newline="") as f:
-            csv.writer(f).writerow([clip_id,
-                                    round(x1, 1), round(y1, 1),
-                                    round(x2, 1), round(y2, 1),
-                                    pole_count, frame])
-
-    # -- Frame I/O -----------------------------------------------------------
-
-    def _middle_frame(self, clip: Path):
-        cap = cv2.VideoCapture(str(clip))
-        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
-        cap.set(cv2.CAP_PROP_POS_FRAMES, n // 2)
-        ok, frame = cap.read()
-        cap.release()
-        if not ok:
-            return None
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    def _all_frames(self, clip: Path) -> list:
-        """Decode every frame so the slider can scrub. ~32 frames at 320px is cheap."""
-        cap = cv2.VideoCapture(str(clip))
-        frames = []
-        while True:
-            ok, f = cap.read()
-            if not ok:
-                break
-            frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
-        cap.release()
-        return frames
+            csv.writer(f).writerow([clip_id, round(x1, 1), round(y1, 1),
+                                    round(x2, 1), round(y2, 1), pole_count, frame])
 
     # -- UI ------------------------------------------------------------------
 
     def _build_widgets(self):
-        self.btn_vert = widgets.Button(description="Vertical (1 pole)",
-                                       button_style="primary", icon="square-o")
-        self.btn_oxer = widgets.Button(description="Oxer (2 poles)",
-                                       button_style="warning", icon="th-large")
-        self.btn_skip = widgets.Button(description="Skip clip", icon="step-forward")
-        self.btn_undo = widgets.Button(description="Redraw box", icon="undo")
-        self.btn_quit = widgets.Button(description="Quit", button_style="danger",
-                                       icon="times")
-        self.status = widgets.HTML(value="")
-        # Frame scrubber. Camera tracks the horse, so the fence may only be
-        # visible at one end of the 2-second clip. Slider value = frame index.
-        self.frame_slider = widgets.IntSlider(
-            value=0, min=0, max=0, step=1,
-            description="Frame:", continuous_update=False,
-            layout=widgets.Layout(width="500px"),
-        )
+        import ipywidgets as widgets
+        from jupyter_bbox_widget import BBoxWidget
 
-        self.btn_vert.on_click(lambda _: self._save(pole_count=1))
-        self.btn_oxer.on_click(lambda _: self._save(pole_count=2))
+        self.bbox = BBoxWidget(classes=self.CLASSES)
+        self.btn_save = widgets.Button(description="Save & next",
+                                       button_style="success", icon="check")
+        self.btn_skip = widgets.Button(description="Skip clip", icon="step-forward")
+        self.btn_quit = widgets.Button(description="Quit", button_style="danger", icon="times")
+        self.status = widgets.HTML(value="")
+        self.frame_slider = widgets.IntSlider(
+            value=0, min=0, max=0, step=1, description="Frame:",
+            continuous_update=False, layout=widgets.Layout(width="500px"))
+
+        self.btn_save.on_click(lambda _: self._save())
         self.btn_skip.on_click(lambda _: self._skip())
-        self.btn_undo.on_click(lambda _: self._clear_box())
         self.btn_quit.on_click(lambda _: self._quit())
         self.frame_slider.observe(self._on_frame_change, names="value")
 
-        self.toolbar = widgets.HBox([
-            self.btn_vert, self.btn_oxer, self.btn_skip, self.btn_undo, self.btn_quit,
-        ])
+        self.toolbar = widgets.HBox([self.btn_save, self.btn_skip, self.btn_quit])
+
+    def _frame_path(self, i: int) -> Path:
+        if i not in self._frame_paths:
+            p = self._tmpdir / f"f{i:03d}.jpg"
+            cv2.imwrite(str(p), self.frames[i])
+            self._frame_paths[i] = p
+        return self._frame_paths[i]
+
+    def _set_image(self, i: int):
+        from jupyter_bbox_widget import encode_image_from_file
+        self.bbox.image = encode_image_from_file(str(self._frame_path(i)))
+        self.bbox.bboxes = []
 
     def _on_frame_change(self, change):
-        if not getattr(self, "frames", None):
+        if not self.frames:
             return
         i = int(change["new"])
-        if 0 <= i < len(self.frames) and self.ax is not None and self.ax.images:
-            self.ax.images[0].set_data(self.frames[i])
-            self.fig.canvas.draw_idle()
-
-    def _on_select(self, eclick, erelease):
-        x1, y1 = eclick.xdata, eclick.ydata
-        x2, y2 = erelease.xdata, erelease.ydata
-        if None in (x1, y1, x2, y2):
-            return
-        self.current_box = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
-        self._update_status()
-
-    def _update_status(self):
-        n_done = len(self.seen)
-        total = n_done + len(self.queue) - self.idx
-        box_msg = (f"box: ({self.current_box[0]:.0f}, {self.current_box[1]:.0f}) "
-                   f"to ({self.current_box[2]:.0f}, {self.current_box[3]:.0f})"
-                   if self.current_box else "no box drawn yet — drag on the image")
-        self.status.value = (
-            f"<b>{n_done}/{total}</b> annotated &nbsp;|&nbsp; "
-            f"current clip: <code>{self.queue[self.idx].name}</code> &nbsp;|&nbsp; "
-            f"{box_msg}"
-        )
-
-    def _clear_box(self):
-        self.current_box = None
-        if self.selector is not None:
-            try:
-                self.selector.set_visible(False)
-                self.selector.update()
-            except Exception:
-                pass
-        self._update_status()
-
-    # -- Main loop -----------------------------------------------------------
+        if 0 <= i < len(self.frames):
+            self._set_image(i)
 
     def start(self):
-        display(self.toolbar)
-        display(self.frame_slider)
-        display(self.status)
+        from IPython.display import display
+        display(self.status, self.frame_slider, self.bbox, self.toolbar)
         self._show_clip()
 
     def _show_clip(self):
         if self.idx >= len(self.queue):
             self.status.value = (f"<b>Done.</b> {len(self.seen)} clips annotated in "
                                  f"<code>{self.out_csv}</code>.")
-            if self.fig is not None:
-                plt.close(self.fig)
             return
-
         clip = self.queue[self.idx]
-        self.frames = self._all_frames(clip)
+        self.frames = _all_frames_bgr(clip)
+        self._frame_paths = {}
         if not self.frames:
             self.idx += 1
             self._show_clip()
             return
 
-        # Slider spans the full clip; start at the middle (best guess for jump).
         n = len(self.frames)
         mid = n // 2
-        # Suppress the observer callback during setup so changing the range doesn't fire.
         self.frame_slider.unobserve(self._on_frame_change, names="value")
         self.frame_slider.max = n - 1
         self.frame_slider.value = mid
         self.frame_slider.observe(self._on_frame_change, names="value")
-
-        if self.fig is None:
-            self.fig, self.ax = plt.subplots(figsize=(9, 5))
-            self.fig.canvas.toolbar_visible = False
-            self.fig.canvas.header_visible = False
-            self.fig.canvas.footer_visible = False
-        self.ax.clear()
-        self.ax.imshow(self.frames[mid])
-        self.ax.set_title(
-            f"Scrub the slider to find the fence, then drag a box — {clip.name}",
-            fontsize=10)
-        self.ax.set_xticks([]); self.ax.set_yticks([])
-
-        # Replace the selector (creating a new one each clip is the safe path
-        # — re-using one across axes that have been .clear()-ed is flaky).
-        self.selector = RectangleSelector(
-            self.ax, self._on_select,
-            useblit=True, button=[1], interactive=True,
-            minspanx=5, minspany=5, spancoords="pixels",
-            props=dict(facecolor="none", edgecolor="orange", linewidth=2),
-        )
-        self.current_box = None
+        self._set_image(mid)
         self._update_status()
-        self.fig.canvas.draw_idle()
 
-    def _save(self, pole_count: int):
-        if self.current_box is None:
+    def _update_status(self):
+        n_done = len(self.seen)
+        total = n_done + len(self.queue) - self.idx
+        self.status.value = (
+            f"<b>{n_done}/{total}</b> annotated &nbsp;|&nbsp; "
+            f"<code>{self.queue[self.idx].name}</code> &nbsp;|&nbsp; "
+            f"scrub to the fence, pick vertical/oxer, drag a box, Save")
+
+    def _save(self):
+        boxes = list(self.bbox.bboxes or [])
+        if not boxes:
             self.status.value = "<b style='color:red'>Draw a box first.</b>"
             return
+        b = boxes[0]
+        x1, y1 = float(b["x"]), float(b["y"])
+        x2, y2 = x1 + float(b["width"]), y1 + float(b["height"])
+        pole_count = 2 if b.get("label") == "oxer" else 1
         clip = self.queue[self.idx]
-        self._append_row(clip.stem, self.current_box, pole_count, int(self.frame_slider.value))
+        self._append_row(clip.stem, (x1, y1, x2, y2), pole_count, int(self.frame_slider.value))
         self.seen.add(clip.stem)
         self.idx += 1
         self._show_clip()
@@ -244,29 +193,17 @@ class ColabAnnotator:
     def _quit(self):
         self.status.value = (f"<b>Stopped.</b> {len(self.seen)} clips annotated in "
                              f"<code>{self.out_csv}</code>.")
-        if self.fig is not None:
-            plt.close(self.fig)
         self.idx = len(self.queue)
 
 
 class OutcomeAnnotator:
-    """Inline Colab annotator for jump outcomes {clean, knockdown, refusal}.
-
-    No box drawing — scrub the slider to watch the jump, then click the outcome.
-    Appends (clip_id, outcome) to outcomes.csv. Use this on the same clips you
-    annotated fences for so the downstream label table can join type/d/outcome.
-
-    Usage (in a Colab cell):
-        from src.preprocess.annotate_colab import OutcomeAnnotator
-        ann = OutcomeAnnotator('data/clips', 'data/annotations/outcomes.csv', limit=150)
-        ann.start()
-    """
+    """Jump-outcome annotator {clean, knockdown, refusal} on plain ipywidgets."""
 
     HEADER = ["clip_id", "outcome"]
     OUTCOMES = ("clean", "knockdown", "refusal")
 
     def __init__(self, clips_dir: str, out_csv: str = "data/annotations/outcomes.csv",
-                 limit: int = 150, only_clips: list[str] | None = None):
+                 limit: int = 150, only_clips: list | None = None):
         self.clips_dir = Path(clips_dir)
         self.out_csv = Path(out_csv)
         self.out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -282,13 +219,11 @@ class OutcomeAnnotator:
         self._init_csv()
         self.seen = self._load_seen()
         self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
+        self.idx = 0
+        self.frames: list = []
         if not self.queue:
             print(f"[outcome] all {len(all_clips)} clips already labeled in {self.out_csv}")
             return
-
-        self.idx = 0
-        self.fig = None
-        self.ax = None
         self._build_widgets()
 
     def _init_csv(self):
@@ -296,29 +231,21 @@ class OutcomeAnnotator:
             with self.out_csv.open("w", newline="") as f:
                 csv.writer(f).writerow(self.HEADER)
 
-    def _load_seen(self) -> set[str]:
+    def _load_seen(self) -> set:
         seen = set()
         with self.out_csv.open() as f:
             for row in csv.DictReader(f):
                 seen.add(row["clip_id"])
         return seen
 
-    def _append_row(self, clip_id: str, outcome: str) -> None:
+    def _append_row(self, clip_id, outcome) -> None:
         with self.out_csv.open("a", newline="") as f:
             csv.writer(f).writerow([clip_id, outcome])
 
-    def _all_frames(self, clip: Path) -> list:
-        cap = cv2.VideoCapture(str(clip))
-        frames = []
-        while True:
-            ok, f = cap.read()
-            if not ok:
-                break
-            frames.append(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
-        cap.release()
-        return frames
-
     def _build_widgets(self):
+        import ipywidgets as widgets
+
+        self.image = widgets.Image(format="jpeg", layout=widgets.Layout(width="600px"))
         self.btn_clean = widgets.Button(description="Clean", button_style="success")
         self.btn_knock = widgets.Button(description="Knockdown", button_style="warning")
         self.btn_refuse = widgets.Button(description="Refusal", button_style="danger")
@@ -340,37 +267,24 @@ class OutcomeAnnotator:
             self.btn_clean, self.btn_knock, self.btn_refuse, self.btn_skip, self.btn_quit])
 
     def _on_frame_change(self, change):
-        if not getattr(self, "frames", None):
+        if not self.frames:
             return
         i = int(change["new"])
-        if 0 <= i < len(self.frames) and self.ax is not None and self.ax.images:
-            self.ax.images[0].set_data(self.frames[i])
-            self.fig.canvas.draw_idle()
-
-    def _update_status(self):
-        n_done = len(self.seen)
-        total = n_done + len(self.queue) - self.idx
-        self.status.value = (
-            f"<b>{n_done}/{total}</b> labeled &nbsp;|&nbsp; "
-            f"current clip: <code>{self.queue[self.idx].name}</code> &nbsp;|&nbsp; "
-            f"scrub to watch the jump, then pick the outcome")
+        if 0 <= i < len(self.frames):
+            self.image.value = _jpeg_bytes(self.frames[i])
 
     def start(self):
-        display(self.toolbar)
-        display(self.frame_slider)
-        display(self.status)
+        from IPython.display import display
+        display(self.status, self.image, self.frame_slider, self.toolbar)
         self._show_clip()
 
     def _show_clip(self):
         if self.idx >= len(self.queue):
             self.status.value = (f"<b>Done.</b> {len(self.seen)} outcomes in "
                                  f"<code>{self.out_csv}</code>.")
-            if self.fig is not None:
-                plt.close(self.fig)
             return
-
         clip = self.queue[self.idx]
-        self.frames = self._all_frames(clip)
+        self.frames = _all_frames_bgr(clip)
         if not self.frames:
             self.idx += 1
             self._show_clip()
@@ -381,18 +295,16 @@ class OutcomeAnnotator:
         self.frame_slider.max = n - 1
         self.frame_slider.value = n // 2
         self.frame_slider.observe(self._on_frame_change, names="value")
-
-        if self.fig is None:
-            self.fig, self.ax = plt.subplots(figsize=(9, 5))
-            self.fig.canvas.toolbar_visible = False
-            self.fig.canvas.header_visible = False
-            self.fig.canvas.footer_visible = False
-        self.ax.clear()
-        self.ax.imshow(self.frames[n // 2])
-        self.ax.set_title(f"Did the rail stay up? — {clip.name}", fontsize=10)
-        self.ax.set_xticks([]); self.ax.set_yticks([])
+        self.image.value = _jpeg_bytes(self.frames[n // 2])
         self._update_status()
-        self.fig.canvas.draw_idle()
+
+    def _update_status(self):
+        n_done = len(self.seen)
+        total = n_done + len(self.queue) - self.idx
+        self.status.value = (
+            f"<b>{n_done}/{total}</b> labeled &nbsp;|&nbsp; "
+            f"<code>{self.queue[self.idx].name}</code> &nbsp;|&nbsp; "
+            f"scrub to watch the jump, then pick the outcome")
 
     def _save(self, outcome: str):
         clip = self.queue[self.idx]
@@ -408,6 +320,4 @@ class OutcomeAnnotator:
     def _quit(self):
         self.status.value = (f"<b>Stopped.</b> {len(self.seen)} outcomes in "
                              f"<code>{self.out_csv}</code>.")
-        if self.fig is not None:
-            plt.close(self.fig)
         self.idx = len(self.queue)
