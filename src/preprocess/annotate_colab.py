@@ -67,6 +67,7 @@ class ColabAnnotator:
 
         self._init_csv()
         self.seen = self._load_seen()
+        self.saved_start = len(self.seen)
         self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
         self.idx = 0
         self.session = 0
@@ -83,6 +84,31 @@ class ColabAnnotator:
         if not self.out_csv.exists() or self.out_csv.stat().st_size == 0:
             with self.out_csv.open("w", newline="") as f:
                 csv.writer(f).writerow(self.HEADER)
+            return
+        self._migrate_header()
+
+    def _migrate_header(self):
+        # A legacy fences.csv may predate the `frame` column. Rewrite it onto the
+        # current HEADER (filling missing columns) so header and rows never disagree
+        # and downstream pd.read_csv doesn't choke on ragged rows.
+        with self.out_csv.open(newline="") as f:
+            rows = list(csv.reader(f))
+        if not rows:
+            with self.out_csv.open("w", newline="") as f:
+                csv.writer(f).writerow(self.HEADER)
+            return
+        header = rows[0]
+        if header == self.HEADER:
+            return
+        col = {name: i for i, name in enumerate(header)}
+        with self.out_csv.open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(self.HEADER)
+            for row in rows[1:]:
+                if not row:
+                    continue
+                w.writerow([row[col[name]] if name in col and col[name] < len(row) else ""
+                            for name in self.HEADER])
 
     def _load_seen(self) -> set:
         seen = set()
@@ -176,8 +202,8 @@ class ColabAnnotator:
         pole_count = 2 if b.get("label") == "oxer" else 1
         clip = self.queue[self.idx]
         self._append_row(clip.stem, (x1, y1, x2, y2), pole_count, int(self.frame_slider.value))
-        self.seen.add(clip.stem)
-        self.session += 1
+        self.seen = self._load_seen()  # re-read so the counter reflects rows actually on disk
+        self.session = len(self.seen) - self.saved_start
         self.idx += 1
         self._show_clip()
 
@@ -213,6 +239,7 @@ class OutcomeAnnotator:
 
         self._init_csv()
         self.seen = self._load_seen()
+        self.saved_start = len(self.seen)
         self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
         self.idx = 0
         self.session = 0
@@ -308,8 +335,8 @@ class OutcomeAnnotator:
     def _save(self, outcome: str):
         clip = self.queue[self.idx]
         self._append_row(clip.stem, outcome)
-        self.seen.add(clip.stem)
-        self.session += 1
+        self.seen = self._load_seen()  # re-read so the counter reflects rows actually on disk
+        self.session = len(self.seen) - self.saved_start
         self.idx += 1
         self._show_clip()
 
