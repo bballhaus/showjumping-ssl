@@ -48,6 +48,27 @@ def _jpeg_data_url(frame_bgr) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(_jpeg_bytes(frame_bgr)).decode()
 
 
+def _build_frame_nav(readout, goto, step, last_index):
+    """Button-based frame scrubber (the IntSlider doesn't render in Colab)."""
+    import ipywidgets as widgets
+
+    def btn(label, cb):
+        b = widgets.Button(description=label, layout=widgets.Layout(width="48px"))
+        b.on_click(lambda _: cb())
+        return b
+
+    return widgets.HBox([
+        widgets.HTML("Frame:"),
+        btn("|<", lambda: goto(0)),
+        btn("-5", lambda: step(-5)),
+        btn("-1", lambda: step(-1)),
+        readout,
+        btn("+1", lambda: step(1)),
+        btn("+5", lambda: step(5)),
+        btn(">|", lambda: goto(last_index())),
+    ])
+
+
 class ColabAnnotator:
     """Fence-box annotator built on jupyter_bbox_widget (no ipympl)."""
 
@@ -132,34 +153,37 @@ class ColabAnnotator:
         self.bbox = BBoxWidget(classes=self.CLASSES)
         self.btn_quit = widgets.Button(description="Quit", button_style="danger", icon="times")
         self.status = widgets.HTML(value="")
-        self.frame_slider = widgets.IntSlider(
-            value=0, min=0, max=0, step=1, description="Frame:",
-            continuous_update=False, layout=widgets.Layout(width="500px"))
+        self.frame_readout = widgets.HTML(value="")
+        self.cur_frame = 0
+        self.frame_nav = _build_frame_nav(self.frame_readout, self._goto, self._step,
+                                          lambda: len(self.frames) - 1)
 
         self.bbox.on_submit(lambda *a: self._save())
         self.bbox.on_skip(lambda *a: self._skip())
         self.btn_quit.on_click(lambda _: self._quit())
-        self.frame_slider.observe(self._on_frame_change, names="value")
 
         self.toolbar = widgets.HBox([self.btn_quit])
 
-    def _set_image(self, i: int):
-        self.bbox.image = _jpeg_data_url(self.frames[i])
-        self.bbox.bboxes = []
-
-    def _on_frame_change(self, change):
+    def _goto(self, i: int):
+        # IntSlider doesn't render under Colab's custom widget manager, so frames
+        # are stepped with buttons that drive this index instead.
         if not self.frames:
             return
-        i = int(change["new"])
-        if 0 <= i < len(self.frames):
-            self._set_image(i)
+        i = max(0, min(int(i), len(self.frames) - 1))
+        self.cur_frame = i
+        self.bbox.image = _jpeg_data_url(self.frames[i])
+        self.bbox.bboxes = []
+        self.frame_readout.value = f"<b>{i} / {len(self.frames) - 1}</b>"
+
+    def _step(self, delta: int):
+        self._goto(self.cur_frame + delta)
 
     def start(self):
         from IPython.display import display
         if not self.queue:
             return
         self._update_status()
-        display(self.status, self.frame_slider, self.bbox, self.toolbar)
+        display(self.status, self.frame_nav, self.bbox, self.toolbar)
         self._show_clip()
 
     def _show_clip(self):
@@ -174,13 +198,7 @@ class ColabAnnotator:
             self._show_clip()
             return
 
-        n = len(self.frames)
-        mid = n // 2
-        self.frame_slider.unobserve(self._on_frame_change, names="value")
-        self.frame_slider.max = n - 1
-        self.frame_slider.value = mid
-        self.frame_slider.observe(self._on_frame_change, names="value")
-        self._set_image(mid)
+        self._goto(len(self.frames) // 2)
         self._update_status()
 
     def _update_status(self):
@@ -201,7 +219,7 @@ class ColabAnnotator:
         x2, y2 = x1 + float(b["width"]), y1 + float(b["height"])
         pole_count = 2 if b.get("label") == "oxer" else 1
         clip = self.queue[self.idx]
-        self._append_row(clip.stem, (x1, y1, x2, y2), pole_count, int(self.frame_slider.value))
+        self._append_row(clip.stem, (x1, y1, x2, y2), pole_count, int(self.cur_frame))
         self.seen = self._load_seen()  # re-read so the counter reflects rows actually on disk
         self.session = len(self.seen) - self.saved_start
         self.idx += 1
@@ -275,33 +293,37 @@ class OutcomeAnnotator:
         self.btn_skip = widgets.Button(description="Skip clip", icon="step-forward")
         self.btn_quit = widgets.Button(description="Quit", button_style="danger", icon="times")
         self.status = widgets.HTML(value="")
-        self.frame_slider = widgets.IntSlider(
-            value=0, min=0, max=0, step=1, description="Frame:",
-            continuous_update=False, layout=widgets.Layout(width="500px"))
+        self.frame_readout = widgets.HTML(value="")
+        self.cur_frame = 0
+        self.frame_nav = _build_frame_nav(self.frame_readout, self._goto, self._step,
+                                          lambda: len(self.frames) - 1)
 
         self.btn_clean.on_click(lambda _: self._save("clean"))
         self.btn_knock.on_click(lambda _: self._save("knockdown"))
         self.btn_refuse.on_click(lambda _: self._save("refusal"))
         self.btn_skip.on_click(lambda _: self._skip())
         self.btn_quit.on_click(lambda _: self._quit())
-        self.frame_slider.observe(self._on_frame_change, names="value")
 
         self.toolbar = widgets.HBox([
             self.btn_clean, self.btn_knock, self.btn_refuse, self.btn_skip, self.btn_quit])
 
-    def _on_frame_change(self, change):
+    def _goto(self, i: int):
         if not self.frames:
             return
-        i = int(change["new"])
-        if 0 <= i < len(self.frames):
-            self.image.value = _jpeg_bytes(self.frames[i])
+        i = max(0, min(int(i), len(self.frames) - 1))
+        self.cur_frame = i
+        self.image.value = _jpeg_bytes(self.frames[i])
+        self.frame_readout.value = f"<b>{i} / {len(self.frames) - 1}</b>"
+
+    def _step(self, delta: int):
+        self._goto(self.cur_frame + delta)
 
     def start(self):
         from IPython.display import display
         if not self.queue:
             return
         self._update_status()
-        display(self.status, self.image, self.frame_slider, self.toolbar)
+        display(self.status, self.image, self.frame_nav, self.toolbar)
         self._show_clip()
 
     def _show_clip(self):
@@ -316,12 +338,7 @@ class OutcomeAnnotator:
             self._show_clip()
             return
 
-        n = len(self.frames)
-        self.frame_slider.unobserve(self._on_frame_change, names="value")
-        self.frame_slider.max = n - 1
-        self.frame_slider.value = n // 2
-        self.frame_slider.observe(self._on_frame_change, names="value")
-        self.image.value = _jpeg_bytes(self.frames[n // 2])
+        self._goto(len(self.frames) // 2)
         self._update_status()
 
     def _update_status(self):
