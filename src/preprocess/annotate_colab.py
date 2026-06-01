@@ -19,8 +19,8 @@ Usage (in a Colab cell):
 
 from __future__ import annotations
 
+import base64
 import csv
-import tempfile
 from pathlib import Path
 
 import cv2
@@ -42,6 +42,10 @@ def _all_frames_bgr(clip: Path) -> list:
 def _jpeg_bytes(frame_bgr) -> bytes:
     ok, buf = cv2.imencode(".jpg", frame_bgr)
     return buf.tobytes() if ok else b""
+
+
+def _jpeg_data_url(frame_bgr) -> str:
+    return "data:image/jpeg;base64," + base64.b64encode(_jpeg_bytes(frame_bgr)).decode()
 
 
 class ColabAnnotator:
@@ -66,8 +70,6 @@ class ColabAnnotator:
         self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
         self.idx = 0
         self.frames: list = []
-        self._tmpdir = Path(tempfile.mkdtemp(prefix="fence_ann_"))
-        self._frame_paths: dict[int, Path] = {}
 
         if not self.queue:
             print(f"[annotate] all {len(all_clips)} clips already annotated in {self.out_csv}")
@@ -117,16 +119,8 @@ class ColabAnnotator:
 
         self.toolbar = widgets.HBox([self.btn_save, self.btn_skip, self.btn_quit])
 
-    def _frame_path(self, i: int) -> Path:
-        if i not in self._frame_paths:
-            p = self._tmpdir / f"f{i:03d}.jpg"
-            cv2.imwrite(str(p), self.frames[i])
-            self._frame_paths[i] = p
-        return self._frame_paths[i]
-
     def _set_image(self, i: int):
-        from jupyter_bbox_widget import encode_image_from_file
-        self.bbox.image = encode_image_from_file(str(self._frame_path(i)))
+        self.bbox.image = _jpeg_data_url(self.frames[i])
         self.bbox.bboxes = []
 
     def _on_frame_change(self, change):
@@ -148,7 +142,6 @@ class ColabAnnotator:
             return
         clip = self.queue[self.idx]
         self.frames = _all_frames_bgr(clip)
-        self._frame_paths = {}
         if not self.frames:
             self.idx += 1
             self._show_clip()
