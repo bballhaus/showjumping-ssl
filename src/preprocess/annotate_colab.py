@@ -103,21 +103,18 @@ class ColabAnnotator:
         from jupyter_bbox_widget import BBoxWidget
 
         self.bbox = BBoxWidget(classes=self.CLASSES)
-        self.btn_save = widgets.Button(description="Save & next",
-                                       button_style="success", icon="check")
-        self.btn_skip = widgets.Button(description="Skip clip", icon="step-forward")
         self.btn_quit = widgets.Button(description="Quit", button_style="danger", icon="times")
         self.status = widgets.HTML(value="")
         self.frame_slider = widgets.IntSlider(
             value=0, min=0, max=0, step=1, description="Frame:",
             continuous_update=False, layout=widgets.Layout(width="500px"))
 
-        self.btn_save.on_click(lambda _: self._save())
-        self.btn_skip.on_click(lambda _: self._skip())
+        self.bbox.on_submit(lambda *a: self._save())
+        self.bbox.on_skip(lambda *a: self._skip())
         self.btn_quit.on_click(lambda _: self._quit())
         self.frame_slider.observe(self._on_frame_change, names="value")
 
-        self.toolbar = widgets.HBox([self.btn_save, self.btn_skip, self.btn_quit])
+        self.toolbar = widgets.HBox([self.btn_quit])
 
     def _set_image(self, i: int):
         self.bbox.image = _jpeg_data_url(self.frames[i])
@@ -162,7 +159,7 @@ class ColabAnnotator:
         self.status.value = (
             f"<b>{n_done}/{total}</b> annotated &nbsp;|&nbsp; "
             f"<code>{self.queue[self.idx].name}</code> &nbsp;|&nbsp; "
-            f"scrub to the fence, pick vertical/oxer, drag a box, Save")
+            f"scrub to the fence, pick vertical/oxer, drag a box, click Submit (or Skip)")
 
     def _save(self):
         boxes = list(self.bbox.bboxes or [])
