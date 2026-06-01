@@ -19,7 +19,8 @@ project/
 │   ├── eval/         # metrics, sample-efficiency sweep, ablation runner
 │   └── viz/          # t-SNE (categorical + continuous), d histogram, training + efficiency curves
 ├── notebooks/
-│   └── colab_milestone.ipynb     # end-to-end runnable on Colab Pro (A100/L4/T4)
+│   ├── colab_milestone.ipynb     # milestone pipeline (scrape -> SSL -> milestone figures)
+│   └── colab_final.ipynb         # final pipeline (venue fix, downstream, baselines, analysis)
 ├── milestone_overleaf/           # PDF deliverable + LaTeX source + final figures
 │   ├── milestone.tex
 │   └── figures/
@@ -72,9 +73,11 @@ python -m src.viz.make_figures  --csv data/annotations/auto.csv --emb data/embed
 
 ## Week 3–4: venue fix, automated detection, downstream, baselines, analysis
 
-The week-3/4 work — outcome labels, the SSL venue fix, automated fence detection,
-the downstream heads, the three baselines, and the sample-efficiency / ablation
-analysis — runs as follows (all Colab-friendly; `--device cuda`):
+The easiest path is [`notebooks/colab_final.ipynb`](notebooks/colab_final.ipynb), which
+wires all of the below into ordered cells (it picks up from the milestone's segmented clips
+on Drive). To run the pieces by hand instead — outcome labels, the SSL venue fix, automated
+fence detection, the downstream heads, the three baselines, and the sample-efficiency /
+ablation analysis — they go as follows (all Colab-friendly; `--device cuda`):
 
 ```bash
 # 1. Automated fence detection (recovers the proposal's YOLO path).
