@@ -129,8 +129,9 @@ class ColabAnnotator:
             self._set_image(i)
 
     def start(self):
+        import ipywidgets as widgets
         from IPython.display import display
-        display(self.status, self.frame_slider, self.bbox, self.toolbar)
+        display(widgets.VBox([self.status, self.frame_slider, self.bbox, self.toolbar]))
         self._show_clip()
 
     def _show_clip(self):
@@ -267,8 +268,9 @@ class OutcomeAnnotator:
             self.image.value = _jpeg_bytes(self.frames[i])
 
     def start(self):
+        import ipywidgets as widgets
         from IPython.display import display
-        display(self.status, self.image, self.frame_slider, self.toolbar)
+        display(widgets.VBox([self.status, self.image, self.frame_slider, self.toolbar]))
         self._show_clip()
 
     def _show_clip(self):
