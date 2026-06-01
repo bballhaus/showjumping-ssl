@@ -37,8 +37,21 @@ def load_fence_annotations(path: Path) -> dict[str, dict]:
     return out
 
 
+def _auto_fence_box(clip_path: Path, fence_detector, takeoff_fi: int) -> Box | None:
+    """Detect the fence with the fine-tuned YOLO model near the takeoff frame."""
+    import cv2
+    cap = cv2.VideoCapture(str(clip_path))
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+    cap.set(cv2.CAP_PROP_POS_FRAMES, min(max(takeoff_fi, 0), n - 1))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        return None
+    return fence_detector.best_box(frame)
+
+
 def process_clip(clip_path: Path, detector: HorseDetector,
-                 fence_ann: dict | None) -> dict:
+                 fence_ann: dict | None, fence_detector=None) -> dict:
     horses = detector.detect_video(clip_path, stride=2)
     horse_traj: list[tuple[int, Box]] = []
     for fi, boxes in horses:
@@ -55,11 +68,20 @@ def process_clip(clip_path: Path, detector: HorseDetector,
         "mpp": float("nan"),
         "takeoff_frame": -1,
     }
-    if fence_ann is None or not horse_traj:
+    if not horse_traj:
         return row
 
-    fence_box: Box = fence_ann["box"]
-    pole_count = fence_ann.get("pole_count")
+    pole_count = None
+    if fence_ann is not None:
+        fence_box: Box = fence_ann["box"]
+        pole_count = fence_ann.get("pole_count")
+    elif fence_detector is not None:
+        takeoff_fi = detect_takeoff_frame(horse_traj)
+        fence_box = _auto_fence_box(clip_path, fence_detector, takeoff_fi)
+        if fence_box is None:
+            return row
+    else:
+        return row
     mpp = meters_per_pixel(fence_box)
     takeoff_fi = detect_takeoff_frame(horse_traj)
     # Pick horse box closest to takeoff frame.
@@ -82,18 +104,26 @@ def main() -> None:
     ap.add_argument("--fences", type=Path, default=Path("data/annotations/fences.csv"))
     ap.add_argument("--out", type=Path, default=Path("data/annotations/auto.csv"))
     ap.add_argument("--weights", type=str, default="yolov8n.pt")
+    ap.add_argument("--fence-weights", type=str, default=None,
+                    help="Fine-tuned fence YOLO weights; enables automatic fence detection "
+                         "for clips with no hand annotation.")
     ap.add_argument("--device", type=str, default="cpu")
     args = ap.parse_args()
 
     detector = HorseDetector(weights=args.weights, device=args.device)
+    fence_detector = None
+    if args.fence_weights:
+        from .fence_yolo import FenceDetector
+        fence_detector = FenceDetector(args.fence_weights, device=args.device)
     fences = load_fence_annotations(args.fences)
     clips = sorted(args.clips.glob("*.mp4"))
-    print(f"[pipeline] {len(clips)} clips, {len(fences)} fence annotations")
+    print(f"[pipeline] {len(clips)} clips, {len(fences)} fence annotations"
+          f"{', auto-detect on' if fence_detector else ''}")
 
     rows = []
     for cp in clips:
         ann = fences.get(cp.stem)
-        rows.append(process_clip(cp, detector, ann))
+        rows.append(process_clip(cp, detector, ann, fence_detector=fence_detector))
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(args.out, index=False)

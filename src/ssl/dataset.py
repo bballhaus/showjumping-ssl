@@ -5,12 +5,18 @@ a shuffled-triple version (for temporal-order) on demand.
 from __future__ import annotations
 
 import random
+from collections import defaultdict
 from pathlib import Path
 
 import av
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, Sampler
+
+
+def video_of(path: Path) -> str:
+    """Source video id is the clip filename stem prefix before the underscore."""
+    return path.stem.split("_", 1)[0]
 
 
 def _read_video_frames(path: Path, n_frames: int = 16, size: int = 112) -> np.ndarray:
@@ -60,16 +66,31 @@ def _to_chw(frames: np.ndarray) -> torch.Tensor:
     return t.permute(3, 0, 1, 2).contiguous()
 
 
-def _augment_clip(frames: np.ndarray, rng: random.Random) -> np.ndarray:
-    """Light spatial + photometric augmentation for two contrastive views."""
+def _augment_clip(frames: np.ndarray, rng: random.Random,
+                  color_jitter: float = 0.3) -> np.ndarray:
+    """Spatial + photometric augmentation for two contrastive views.
+
+    Beyond a flip and brightness jitter, we apply per-channel color gains and a
+    contrast shift. This is the "arena-color jitter" the milestone names as the
+    venue-confound fallback: arenas differ in lighting, footing color, and crowd
+    backdrop, so jittering color makes the contrastive objective stop using venue
+    palette as a shortcut. `color_jitter` scales the strength (0 disables it).
+    """
     out = frames.copy()
     # Horizontal flip.
     if rng.random() < 0.5:
         out = out[:, :, ::-1, :]
-    # Brightness jitter.
-    g = rng.uniform(0.8, 1.2)
-    out = np.clip(out.astype(np.float32) * g, 0, 255).astype(np.uint8)
-    return out
+    f = out.astype(np.float32)
+    # Global brightness.
+    f *= rng.uniform(0.8, 1.2)
+    if color_jitter > 0:
+        # Per-channel color gain (palette shift) + contrast around the mean.
+        gains = np.array([rng.uniform(1 - color_jitter, 1 + color_jitter)
+                          for _ in range(3)], dtype=np.float32)
+        f *= gains.reshape(1, 1, 1, 3)
+        contrast = rng.uniform(1 - color_jitter, 1 + color_jitter)
+        f = (f - 127.5) * contrast + 127.5
+    return np.clip(f, 0, 255).astype(np.uint8)
 
 
 class SSLClipDataset(Dataset):
@@ -89,6 +110,13 @@ class SSLClipDataset(Dataset):
         self.n_frames = n_frames
         self.size = size
         self.sub_T = sub_T
+        self.videos = [video_of(p) for p in self.paths]
+        self.domain_ids = sorted(set(self.videos))
+        self.video_to_idx = {v: i for i, v in enumerate(self.domain_ids)}
+
+    @property
+    def n_domains(self) -> int:
+        return len(self.domain_ids)
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -119,6 +147,7 @@ class SSLClipDataset(Dataset):
             "view_b": view_b,
             "shuffle_x": shuffle_x,
             "shuffle_y": torch.tensor(perm_idx, dtype=torch.long),
+            "domain_y": torch.tensor(self.video_to_idx[self.videos[idx]], dtype=torch.long),
             "path": str(path),
         }
 
@@ -138,3 +167,40 @@ class InferenceClipDataset(Dataset):
         path = self.paths[idx]
         frames = _read_video_frames(path, n_frames=self.n_frames, size=self.size)
         return {"x": _to_chw(frames), "path": str(path)}
+
+
+class VenueBalancedSampler(Sampler[int]):
+    """Draws clips so every source video is represented roughly equally per epoch.
+
+    Without this the batch composition mirrors the raw per-venue clip counts, which
+    lets the contrastive objective exploit venue as a shortcut. We resample each
+    under-represented video up to the size of the largest one, then shuffle.
+    """
+
+    def __init__(self, dataset: SSLClipDataset, seed: int = 0):
+        self.seed = seed
+        self.by_video: dict[str, list[int]] = defaultdict(list)
+        for i, v in enumerate(dataset.videos):
+            self.by_video[v].append(i)
+        self.per_video = max((len(ix) for ix in self.by_video.values()), default=0)
+        self.total = self.per_video * len(self.by_video)
+        self._epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self._epoch = epoch
+
+    def __len__(self) -> int:
+        return self.total
+
+    def __iter__(self):
+        rng = random.Random(self.seed + self._epoch)
+        order: list[int] = []
+        for idxs in self.by_video.values():
+            picks = list(idxs)
+            while len(picks) < self.per_video:
+                picks.append(rng.choice(idxs))
+            rng.shuffle(picks)
+            order.extend(picks[:self.per_video])
+        rng.shuffle(order)
+        self._epoch += 1
+        return iter(order)

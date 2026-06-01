@@ -20,6 +20,9 @@ def plot_curves(log_csv: Path, out_path: Path) -> None:
     fig, ax = plt.subplots(figsize=(6, 4))
     by_epoch["loss_contrastive"].plot(ax=ax, label="InfoNCE", marker="o")
     by_epoch["loss_order"].plot(ax=ax, label="Temporal order (CE)", marker="s")
+    if "loss_domain" in df.columns and df["loss_domain"].abs().sum() > 0:
+        df.groupby("epoch")["loss_domain"].mean().plot(
+            ax=ax, label="Domain-adv (CE)", marker="x")
     by_epoch["loss_total"].plot(ax=ax, label="Total", marker="^", linestyle="--")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")

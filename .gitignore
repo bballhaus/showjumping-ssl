@@ -4,6 +4,9 @@ data/clips/
 data/clips_rejected/
 data/frames/
 data/embeddings.npz
+data/fence_yolo/
+data/results/
+runs/
 checkpoints/
 *.pt
 *.pth
