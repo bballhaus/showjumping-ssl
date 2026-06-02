@@ -33,19 +33,24 @@ from src.preprocess.detect import HorseDetector
 
 
 def _scan_horse_track(video: Path, detector: HorseDetector, sample_fps: float = 8.0,
-                      max_seconds: float | None = None):
+                      max_seconds: float | None = None, start_seconds: float = 0.0):
     """Sample the video at ~sample_fps; return (native_fps, frame_h, samples).
 
     samples: list of (time_s, Box|None) — highest-confidence horse box per sample.
+    Scans the interval [start_seconds, max_seconds]; start_seconds lets you skip
+    intro/course-walk footage (and preview a known-active window quickly).
     """
     cap = cv2.VideoCapture(str(video))
     native_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frame_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720.0
     stride = max(1, round(native_fps / sample_fps))
+    start_idx = max(0, int(start_seconds * native_fps))
     max_idx = None if max_seconds is None else int(max_seconds * native_fps)
+    if start_idx > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
 
     samples: list[tuple[float, object]] = []
-    idx = 0
+    idx = start_idx
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -125,11 +130,12 @@ def find_takeoffs(samples, frame_h: float, before: float = 3.0, after: float = 1
 
 def segment_video_jumps(video: Path, out_dir: Path, detector: HorseDetector,
                         before: float = 3.0, after: float = 1.0, sample_fps: float = 8.0,
-                        max_seconds: float | None = None, max_clips: int | None = None,
+                        max_seconds: float | None = None, start_seconds: float = 0.0,
+                        max_clips: int | None = None,
                         **find_kw) -> tuple[list[float], list[Path]]:
     """Scan one video, find takeoffs, cut [t-before, t+after] clips."""
     _, frame_h, samples = _scan_horse_track(video, detector, sample_fps=sample_fps,
-                                            max_seconds=max_seconds)
+                                            max_seconds=max_seconds, start_seconds=start_seconds)
     takeoffs = find_takeoffs(samples, frame_h, before=before, after=after, **find_kw)
     dur = video_duration(video)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -148,9 +154,10 @@ def segment_video_jumps(video: Path, out_dir: Path, detector: HorseDetector,
 
 
 def segment_jumps(raw_dir: Path, out_dir: Path, detector: HorseDetector | None = None,
-                  weights: str = "yolov8n.pt", device: str = "cuda",
+                  weights: str = "yolov8m.pt", device: str = "cuda",
                   before: float = 3.0, after: float = 1.0, sample_fps: float = 8.0,
                   limit_videos: int | None = None, max_seconds: float | None = None,
+                  start_seconds: float = 0.0,
                   max_clips_per_video: int | None = None, **find_kw) -> int:
     """Notebook entry point. Returns total clips written. See module docstring."""
     raw_dir, out_dir = Path(raw_dir), Path(out_dir)
@@ -167,7 +174,8 @@ def segment_jumps(raw_dir: Path, out_dir: Path, detector: HorseDetector | None =
     for v in tqdm(vids, desc="videos", unit="vid"):
         takeoffs, written = segment_video_jumps(
             v, out_dir, detector, before=before, after=after, sample_fps=sample_fps,
-            max_seconds=max_seconds, max_clips=max_clips_per_video, **find_kw)
+            max_seconds=max_seconds, start_seconds=start_seconds,
+            max_clips=max_clips_per_video, **find_kw)
         tqdm.write(f"[segment_jumps] {v.name}: {len(takeoffs)} takeoffs -> {len(written)} clips")
         total += len(written)
     print(f"[segment_jumps] total: {total} clips -> {out_dir}")
@@ -182,11 +190,13 @@ def main() -> None:
     ap.add_argument("--after", type=float, default=1.0, help="seconds after takeoff")
     ap.add_argument("--sample-fps", type=float, default=8.0,
                     help="detection sampling rate while scanning for takeoffs")
-    ap.add_argument("--weights", default="yolov8n.pt")
+    ap.add_argument("--weights", default="yolov8m.pt")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--limit-videos", type=int, default=None, help="subset: first N videos")
     ap.add_argument("--max-seconds", type=float, default=None,
                     help="subset: only scan the first N seconds of each video")
+    ap.add_argument("--start-seconds", type=float, default=0.0,
+                    help="subset: skip the first N seconds (intro/course walk) before scanning")
     ap.add_argument("--max-clips-per-video", type=int, default=None)
     ap.add_argument("--min-gap", type=float, default=5.0,
                     help="minimum seconds between accepted takeoffs")
@@ -201,6 +211,7 @@ def main() -> None:
     segment_jumps(args.raw, args.out, weights=args.weights, device=args.device,
                   before=args.before, after=args.after, sample_fps=args.sample_fps,
                   limit_videos=args.limit_videos, max_seconds=args.max_seconds,
+                  start_seconds=args.start_seconds,
                   max_clips_per_video=args.max_clips_per_video, min_gap=args.min_gap,
                   vel_thresh=args.vel_thresh, min_present_frac=args.min_present_frac,
                   require_growth=args.require_growth)
