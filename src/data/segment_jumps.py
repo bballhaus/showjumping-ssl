@@ -65,9 +65,11 @@ def _scan_horse_track(video: Path, detector: HorseDetector, sample_fps: float = 
     intro/course-walk footage. The default 12 fps resolves one-stride combination
     takeoffs (~0.5 s apart), which 8 fps smears together.
 
-    Seeks directly to each sampled frame instead of decoding every frame, so cost
-    scales with the number of samples, not the video length. A tqdm bar over the
-    expected sample count gives live progress so a long video never looks hung.
+    Seeks once to start_seconds, then reads straight through and detects every
+    stride-th frame. Sequential decode is far cheaper than seeking per sample
+    (a per-frame seek rewinds to the prior keyframe and re-decodes forward, ~100x
+    more work at small stride). A tqdm bar over the expected sample count gives
+    live progress so a long window never looks hung.
     """
     cap = cv2.VideoCapture(str(video))
     native_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
@@ -79,20 +81,26 @@ def _scan_horse_track(video: Path, detector: HorseDetector, sample_fps: float = 
     if max_seconds is not None:
         cap_idx = start_idx + int(max_seconds * native_fps)
         end_idx = cap_idx if end_idx is None else min(end_idx, cap_idx)
+    if start_idx > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
 
-    sample_idxs = (list(range(start_idx, end_idx + 1, stride))
-                   if end_idx is not None and end_idx >= start_idx else [])
-    samples: list[tuple[float, object]] = []
-    bar = tqdm(sample_idxs, desc=f"scan {video.stem[:18]}", unit="smp",
+    expected = (((end_idx - start_idx) // stride + 1)
+                if end_idx is not None and end_idx >= start_idx else None)
+    bar = tqdm(total=expected, desc=f"scan {video.stem[:18]}", unit="smp",
                disable=not progress, leave=False)
-    for idx in bar:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    samples: list[tuple[float, object]] = []
+    idx = start_idx
+    while True:
         ok, frame = cap.read()
-        if not ok:
+        if not ok or (end_idx is not None and idx > end_idx):
             break
-        boxes = detector.detect_frame(frame)
-        box = max(boxes, key=lambda b: b.score) if boxes else None
-        samples.append((idx / native_fps, box))
+        if (idx - start_idx) % stride == 0:
+            boxes = detector.detect_frame(frame)
+            box = max(boxes, key=lambda b: b.score) if boxes else None
+            samples.append((idx / native_fps, box))
+            bar.update(1)
+        idx += 1
+    bar.close()
     cap.release()
     return native_fps, float(frame_h), samples
 
