@@ -50,6 +50,10 @@ def train(clips_dir: Path, out_dir: Path, epochs: int = 20, batch_size: int = 16
     total_steps = epochs * max(1, len(dl))
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
 
+    # fp16 autocast roughly halves activation memory on the T4, the main OOM lever.
+    use_amp = str(device).startswith("cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+
     log_path = out_dir / "train_log.csv"
     with log_path.open("w", newline="") as logf:
         writer = csv.writer(logf)
@@ -67,28 +71,35 @@ def train(clips_dir: Path, out_dir: Path, epochs: int = 20, batch_size: int = 16
                 shuf_x = batch["shuffle_x"].to(device, non_blocking=True)
                 shuf_y = batch["shuffle_y"].to(device, non_blocking=True)
 
-                z_a = encoder(view_a)
-                z_b = encoder(view_b)
-                loss_c = info_nce(z_a, z_b, tau=tau)
+                with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+                    # Compute view_a features once and reuse for both the contrastive
+                    # projection and the domain head, sparing one R(2+1)D forward pass.
+                    if domain_head is not None:
+                        f_a = encoder.features(view_a)
+                        z_a = nn.functional.normalize(encoder.projector(f_a), dim=-1)
+                    else:
+                        z_a = encoder(view_a)
+                    z_b = encoder(view_b)
+                    loss_c = info_nce(z_a, z_b, tau=tau)
 
-                f_s = encoder.features(shuf_x)
-                logits = order_head(f_s)
-                loss_o = nn.functional.cross_entropy(logits, shuf_y)
+                    f_s = encoder.features(shuf_x)
+                    logits = order_head(f_s)
+                    loss_o = nn.functional.cross_entropy(logits, shuf_y)
 
-                loss = loss_c + lambda_order * loss_o
+                    loss = loss_c + lambda_order * loss_o
 
-                loss_d = torch.zeros((), device=device)
-                if domain_head is not None:
-                    dom_y = batch["domain_y"].to(device, non_blocking=True)
-                    lambd = dann_lambda(gstep, total_steps)
-                    f_a = encoder.features(view_a)
-                    dom_logits = domain_head(f_a, lambd=lambd)
-                    loss_d = nn.functional.cross_entropy(dom_logits, dom_y)
-                    loss = loss + lambda_domain * loss_d
+                    loss_d = torch.zeros((), device=device)
+                    if domain_head is not None:
+                        dom_y = batch["domain_y"].to(device, non_blocking=True)
+                        lambd = dann_lambda(gstep, total_steps)
+                        dom_logits = domain_head(f_a, lambd=lambd)
+                        loss_d = nn.functional.cross_entropy(dom_logits, dom_y)
+                        loss = loss + lambda_domain * loss_d
 
                 opt.zero_grad(set_to_none=True)
-                loss.backward()
-                opt.step()
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
                 sched.step()
                 gstep += 1
 
