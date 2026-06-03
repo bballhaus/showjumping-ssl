@@ -42,6 +42,7 @@ from tqdm.auto import tqdm
 
 from src.data.segment import cut_clip, video_duration
 from src.preprocess.detect import HorseDetector
+from src.preprocess.geometry import _moving_average
 
 
 @dataclass
@@ -114,7 +115,9 @@ def find_takeoffs(samples, frame_h: float, before: float = 3.0, after: float = 1
 
     A takeoff is a sharp upward reversal of the horse-box bottom edge: y2
     (normalized by frame height) moves UP fast at lift-off, so its velocity goes
-    strongly negative. We require the horse to be present through most of the
+    strongly negative. The slow camera-tilt trend is subtracted first (a wide
+    moving average) so panning to follow the horse is not mistaken for a takeoff.
+    We require the horse to be present through most of the
     [t-before, t+after] window. Consecutive reversals within `combo_gap` seconds
     that have a landing spike (velocity > land_thresh) between them are the same
     combination and collapse to one event anchored at the first; reversals farther
@@ -131,6 +134,9 @@ def find_takeoffs(samples, frame_h: float, before: float = 3.0, after: float = 1
     area = np.array([(b.w * b.h) if b is not None else np.nan for _, b in samples])
 
     ys = _nan_smooth(y2, k=3)
+    dt = float(np.median(np.diff(times))) if len(times) > 1 else 1.0
+    win = max(5, int(round(0.8 / dt))) if dt > 0 else 5
+    ys = ys - _moving_average(ys, win)
     vel = np.gradient(ys, times)
 
     def _accept(i: int) -> bool:
