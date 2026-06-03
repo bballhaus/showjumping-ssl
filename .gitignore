@@ -1,11 +1,4 @@
-# Large / regenerable artifacts — keep them on Drive, never on GitHub.
-data/raw/
-data/clips/
-data/clips_rejected/
-data/frames/
-data/embeddings.npz
-data/fence_yolo/
-data/results/
+# Large / regenerable model artifacts — keep them on Drive, never on GitHub.
 runs/
 checkpoints/
 *.pt
@@ -38,6 +31,3 @@ Thumbs.db
 # Editor.
 .vscode/
 .idea/
-
-# Annotations are small + valuable — keep them in git.
-!data/annotations/
