@@ -77,40 +77,33 @@ def _moving_average(x: np.ndarray, win: int) -> np.ndarray:
 
 
 def detect_takeoff_frame(horse_traj: list[tuple[int, Box]]) -> int:
-    """Lift-off frame: the most prominent down->up reversal of the hoof line.
+    """Lift-off frame: where the horse-box bottom edge rises fastest.
 
-    The horse-box bottom edge (y2) sits low (large y2) as the horse loads, then
-    rises sharply at lift-off. To localize that without being fooled by the camera
-    tilting to follow the horse, the slow trend (a wide moving average, ~ the
-    camera pan) is subtracted first; the takeoff is the residual peak with the
-    largest immediate drop after it (prominence), searched over the whole clip.
-    The peak is then refined to sub-sample resolution with a parabolic fit, so the
-    returned frame can fall between the stride-sampled frames.
+    Lift-off is the explosive push-off, the instant the hind hooves leave the
+    ground. In image space the box bottom (y2) climbs fastest right then, so y2
+    velocity is at its most negative. The takeoff is the frame of steepest rise
+    (argmin of the smoothed y2 difference), refined to sub-sample resolution with
+    a parabolic fit so it can fall between the stride-sampled frames.
+
+    Validated against hand-marked lift-off frames: steepest-rise tracks the human
+    "hooves just left the ground" markedly better than the y2 reversal peak, which
+    sits at the bottom of the loading crouch a beat earlier. The interior smoother
+    has no convolution edge artifact, so this does not pin to the clip end.
 
     horse_traj: list of (frame_idx, Box) in temporal order.
     """
     if len(horse_traj) < 5:
         return horse_traj[len(horse_traj) // 2][0] if horse_traj else 0
-    frames = np.array([fi for fi, _ in horse_traj])
+    frames = np.array([fi for fi, _ in horse_traj], dtype=float)
     ys = _interior_smooth(np.array([b.y2 for _, b in horse_traj], dtype=float))
-    resid = ys - _moving_average(ys, max(5, len(ys) // 4))
+    dy = np.diff(ys)
 
-    drop_win = max(2, len(ys) // 8)
-    best_i, best_drop = None, -np.inf
-    for i in range(1, len(resid) - 1):
-        if resid[i] >= resid[i - 1] and resid[i] >= resid[i + 1]:
-            drop = resid[i] - resid[i:i + drop_win + 1].min()
-            if drop > best_drop:
-                best_drop, best_i = drop, i
-    if best_i is None:
-        return int(frames[len(frames) // 2])
-
-    i = best_i
+    i = int(np.argmin(dy))
     refined = float(frames[i])
-    a, b, c = resid[i - 1], resid[i], resid[i + 1]
-    denom = a - 2 * b + c
-    if denom != 0:
-        delta = float(np.clip(0.5 * (a - c) / denom, -1.0, 1.0))
-        step = float(frames[i + 1] - frames[i])
-        refined = frames[i] + delta * step
+    if 0 < i < len(dy) - 1:
+        a, b, c = dy[i - 1], dy[i], dy[i + 1]
+        denom = a - 2 * b + c
+        if denom != 0:
+            delta = float(np.clip(0.5 * (a - c) / denom, -1.0, 1.0))
+            refined = frames[i] + delta * float(frames[i + 1] - frames[i])
     return int(round(refined))
