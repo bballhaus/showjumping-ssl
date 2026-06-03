@@ -56,36 +56,43 @@ class TakeoffEvent:
 
 
 def _scan_horse_track(video: Path, detector: HorseDetector, sample_fps: float = 12.0,
-                      max_seconds: float | None = None, start_seconds: float = 0.0):
+                      max_seconds: float | None = None, start_seconds: float = 0.0,
+                      progress: bool = True):
     """Sample the video at ~sample_fps; return (native_fps, frame_h, samples).
 
     samples: list of (time_s, Box|None) — highest-confidence horse box per sample.
     Scans the interval [start_seconds, max_seconds]; start_seconds lets you skip
     intro/course-walk footage. The default 12 fps resolves one-stride combination
     takeoffs (~0.5 s apart), which 8 fps smears together.
+
+    Seeks directly to each sampled frame instead of decoding every frame, so cost
+    scales with the number of samples, not the video length. A tqdm bar over the
+    expected sample count gives live progress so a long video never looks hung.
     """
     cap = cv2.VideoCapture(str(video))
     native_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
     frame_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720.0
+    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
     stride = max(1, round(native_fps / sample_fps))
     start_idx = max(0, int(start_seconds * native_fps))
-    max_idx = None if max_seconds is None else int(max_seconds * native_fps)
-    if start_idx > 0:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_idx)
+    end_idx = n_frames - 1 if n_frames else None
+    if max_seconds is not None:
+        cap_idx = start_idx + int(max_seconds * native_fps)
+        end_idx = cap_idx if end_idx is None else min(end_idx, cap_idx)
 
+    sample_idxs = (list(range(start_idx, end_idx + 1, stride))
+                   if end_idx is not None and end_idx >= start_idx else [])
     samples: list[tuple[float, object]] = []
-    idx = start_idx
-    while True:
+    bar = tqdm(sample_idxs, desc=f"scan {video.stem[:18]}", unit="smp",
+               disable=not progress, leave=False)
+    for idx in bar:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ok, frame = cap.read()
         if not ok:
             break
-        if max_idx is not None and idx > max_idx:
-            break
-        if idx % stride == 0:
-            boxes = detector.detect_frame(frame)
-            box = max(boxes, key=lambda b: b.score) if boxes else None
-            samples.append((idx / native_fps, box))
-        idx += 1
+        boxes = detector.detect_frame(frame)
+        box = max(boxes, key=lambda b: b.score) if boxes else None
+        samples.append((idx / native_fps, box))
     cap.release()
     return native_fps, float(frame_h), samples
 

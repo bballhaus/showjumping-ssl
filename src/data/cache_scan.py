@@ -27,10 +27,13 @@ def dump_scans(raw_dir: Path, detector: HorseDetector, out_path: Path,
     if limit_videos:
         vids = vids[:limit_videos]
     data: dict = {"sample_fps": sample_fps, "videos": {}}
-    for v in vids:
+    for i, v in enumerate(vids, 1):
+        print(f"[cache_scan] ({i}/{len(vids)}) scanning {v.name} ...", flush=True)
         native_fps, frame_h, samples = _scan_horse_track(
             v, detector, sample_fps=sample_fps,
             max_seconds=max_seconds, start_seconds=start_seconds)
+        last_t = samples[-1][0] if samples else 0.0
+        print(f"[cache_scan]   -> {len(samples)} samples, {last_t:.1f}s", flush=True)
         packed = []
         for t, b in samples:
             if b is None:
