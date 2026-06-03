@@ -397,7 +397,10 @@ class OutcomeAnnotator:
         self._init_csv()
         self.seen = self._load_seen()
         self.saved_start = len(self.seen)
-        self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
+        self.skips_csv = self.out_csv.parent / "skips.csv"
+        self.skipped = self._load_skips()
+        self.queue = [c for c in all_clips
+                      if c.stem not in self.seen and c.stem not in self.skipped][:limit]
         self.idx = 0
         self.session = 0
         self.frames: list = []
@@ -488,6 +491,13 @@ class OutcomeAnnotator:
             f"<code>{self.queue[self.idx].name}</code><br>"
             f"scrub to watch the jump, then pick the outcome")
 
+    def _load_skips(self) -> set:
+        """Clip ids skipped in any prior session, so they don't re-queue."""
+        if not self.skips_csv.exists():
+            return set()
+        with self.skips_csv.open() as f:
+            return {line.strip() for line in f if line.strip()}
+
     def _save(self, outcome: str):
         clip = self.queue[self.idx]
         self._append_row(clip.stem, outcome)
@@ -497,6 +507,10 @@ class OutcomeAnnotator:
         self._show_clip()
 
     def _skip(self):
+        clip = self.queue[self.idx]
+        with self.skips_csv.open("a") as f:
+            f.write(clip.stem + "\n")
+        self.skipped.add(clip.stem)
         self.idx += 1
         self._show_clip()
 
