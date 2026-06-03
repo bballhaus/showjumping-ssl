@@ -9,7 +9,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from ..eval.venue_probe import run as venue_probe
+from .ablation_bar import plot as plot_ablation
 from .d_distribution import plot as plot_d
+from .dataset_stats import plot as plot_dataset_stats
 from .sample_efficiency import plot as plot_sample_eff
 from .training_curve import plot_curves
 from .tsne import plot_tsne, plot_tsne_continuous
@@ -23,6 +26,7 @@ def main() -> None:
     ap.add_argument("--csv", type=Path, default=Path("data/annotations/auto.csv"))
     ap.add_argument("--labels", type=Path, default=Path("data/annotations/labels.csv"))
     ap.add_argument("--results", type=Path, default=Path("data/results/sample_efficiency.csv"))
+    ap.add_argument("--ablations", type=Path, default=Path("data/results/ablations.csv"))
     ap.add_argument("--out", type=Path, default=Path("milestone/figures"))
     args = ap.parse_args()
 
@@ -38,6 +42,11 @@ def main() -> None:
     else:
         print(f"[make_figures] missing {args.csv}")
 
+    if args.labels.exists():
+        plot_dataset_stats(args.labels, args.out / "dataset_stats.png")
+    else:
+        print(f"[make_figures] missing {args.labels}")
+
     if args.emb.exists():
         plot_tsne(args.emb, args.csv if args.csv.exists() else None,
                   color_by="type", out_path=args.out / "tsne_type.png",
@@ -49,6 +58,7 @@ def main() -> None:
             plot_tsne_continuous(args.emb, args.labels, color_by="d_meters",
                                  out_path=args.out / "tsne_d.png",
                                  title="t-SNE colored by takeoff distance d")
+        venue_probe(args.emb, args.out / "venue_probe.png")
     else:
         print(f"[make_figures] missing {args.emb}; run src.ssl.embed first")
 
@@ -57,6 +67,11 @@ def main() -> None:
         plot_sample_eff(args.results, args.out / "sample_efficiency_f1.png", metric="macro_f1")
     else:
         print(f"[make_figures] missing {args.results}; run src.eval.sample_efficiency first")
+
+    if args.ablations.exists():
+        plot_ablation(args.ablations, args.out / "ablation_bar.png", metric="macro_f1")
+    else:
+        print(f"[make_figures] missing {args.ablations}; run src.eval.ablations first")
 
 
 if __name__ == "__main__":

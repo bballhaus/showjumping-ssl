@@ -40,7 +40,7 @@ def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
         lr: float = 1e-3, batch_size: int = 8, val_frac: float = 0.25,
         group_by_venue: bool = False, device: str = "cuda", seed: int = 0,
         train_ids: list[str] | None = None, val_ids: list[str] | None = None,
-        encoder: nn.Module | None = None) -> dict:
+        encoder: nn.Module | None = None, return_preds: bool = False) -> dict:
     torch.manual_seed(seed)
     if train_ids is None or val_ids is None:
         train_ids, val_ids = make_split(labels_csv, val_frac=val_frac,
@@ -131,6 +131,9 @@ def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
         metrics.update(classification_report(y_true, y_pred, types=types))
     if reg_head is not None:
         metrics.update(d_mae(d_true, d_pred, valid=d_valid, types=types))
+    if return_preds:
+        metrics["y_true"] = list(y_true)
+        metrics["y_pred"] = list(y_pred)
     return metrics
 
 
