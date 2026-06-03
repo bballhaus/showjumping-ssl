@@ -16,12 +16,48 @@ import random
 
 import pandas as pd
 
+from ..data.venues import venue_of
 from .dataset import OUTCOMES
 
 
 def _read(labels_csv) -> pd.DataFrame:
     df = pd.read_csv(labels_csv)
     return df[df["outcome"].isin(OUTCOMES)].reset_index(drop=True)
+
+
+def _video_id(clip_id: str) -> str:
+    """Source video id = clip_id minus the trailing _{start_ms}. Uses the LAST
+    underscore so video ids that contain underscores (e.g. h5_V5GYf7iM) survive,
+    unlike the labels.csv 'video' column which splits on the first underscore."""
+    return str(clip_id).rsplit("_", 1)[0]
+
+
+def leave_one_out_splits(labels_csv, level: str = "venue",
+                         restrict_venue: str | None = None):
+    """Leave-one-group-out folds for the honest generalization tests.
+
+    Groups are resolved from the clip id via src/data/venues.py, not the
+    mislabeled 'video' column. Yields (holdout_name, train_ids, val_ids).
+
+    level="venue": one fold per physical venue; the 4 Wellington videos are a
+      single group, so no backdrop leaks into train (true cross-venue, Test A).
+    level="video": one fold per source video. Combined with
+      restrict_venue="wellington" this is the within-venue cross-competition
+      test (same backdrop, different day/course/riders, Test B).
+    """
+    df = _read(labels_csv).copy()
+    df["_vid"] = df["clip_id"].map(_video_id)
+    df["_venue"] = df["_vid"].map(venue_of)
+    if restrict_venue is not None:
+        df = df[df["_venue"] == restrict_venue].reset_index(drop=True)
+    group = df["_venue"] if level == "venue" else df["_vid"]
+
+    folds = []
+    for g in sorted(group.dropna().unique()):
+        mask = group == g
+        folds.append((str(g), df.loc[~mask, "clip_id"].tolist(),
+                      df.loc[mask, "clip_id"].tolist()))
+    return folds
 
 
 def make_split(labels_csv, val_frac: float = 0.25, group_by_venue: bool = False,
