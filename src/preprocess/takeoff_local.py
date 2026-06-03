@@ -99,6 +99,27 @@ def regression_guard(df: pd.DataFrame) -> None:
           "WARN - still clustering at clip end")
 
 
+def score_against_truth(df: pd.DataFrame, takeoffs_path: Path) -> pd.DataFrame | None:
+    if not takeoffs_path.exists():
+        print(f"[score] no {takeoffs_path} yet - run TakeoffAnnotator to create ground truth")
+        return None
+    truth = pd.read_csv(takeoffs_path).rename(columns={"takeoff_frame": "true_frame"})
+    truth["clip_id"] = truth["clip_id"].astype(str)
+    merged = df.merge(truth[["clip_id", "true_frame"]], on="clip_id", how="inner")
+    merged = merged[(merged["takeoff_frame"] >= 0) & merged["true_frame"].notna()].copy()
+    if merged.empty:
+        print("[score] no overlap between detections and ground truth")
+        return None
+    merged["err_frames"] = merged["takeoff_frame"] - merged["true_frame"]
+    bias = merged["err_frames"].mean()
+    mae = merged["err_frames"].abs().mean()
+    within2 = float((merged["err_frames"].abs() <= 2).mean())
+    print(f"[score] clips with ground truth: {len(merged)}")
+    print(f"[score] signed bias: {bias:+.2f} frames (negative = detector early)")
+    print(f"[score] mean abs error: {mae:.2f} frames | within +-2 frames: {within2:.0%}")
+    return merged
+
+
 def plot_signals(tracks_path: Path, out_path: Path, max_clips: int = 12) -> None:
     data = json.loads(tracks_path.read_text())
     items = [(cid, e) for cid, e in data["clips"].items() if e["boxes"]][:max_clips]
@@ -133,6 +154,7 @@ def main() -> None:
     ap.add_argument("--fences", type=Path, default=Path("data/annotations/fences.csv"))
     ap.add_argument("--out", type=Path, default=Path("data/annotations/auto.csv"))
     ap.add_argument("--plot", type=Path, default=Path("data/results/takeoff_local/signals.png"))
+    ap.add_argument("--takeoffs", type=Path, default=Path("data/annotations/takeoffs.csv"))
     args = ap.parse_args()
 
     if not args.tracks.exists():
@@ -141,6 +163,7 @@ def main() -> None:
     df = recompute(args.tracks, args.fences, args.out)
     print(f"[takeoff_local] wrote {len(df)} rows -> {args.out}")
     regression_guard(df)
+    score_against_truth(df, args.takeoffs)
     plot_signals(args.tracks, args.plot)
 
 

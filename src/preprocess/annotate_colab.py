@@ -235,6 +235,145 @@ class ColabAnnotator:
         self.idx = len(self.queue)
 
 
+class TakeoffAnnotator:
+    """Ground-truth lift-off marker: scrub to the takeoff frame and click Mark.
+
+    Writes (clip_id, takeoff_frame) to a CSV so the auto-detector's chosen frame
+    can be scored against a human. Defaults to the clips that already have a fence
+    box (the ones where `d` matters), so a short pass yields a measurable
+    early/late bias for the detector.
+
+    Usage (Colab cell, after enabling the custom widget manager):
+        from src.preprocess.annotate_colab import TakeoffAnnotator
+        import pandas as pd
+        fence_clips = pd.read_csv('data/annotations/fences.csv')['clip_id'].astype(str).tolist()
+        TakeoffAnnotator('data/clips', only_clips=fence_clips).start()
+    """
+
+    HEADER = ["clip_id", "takeoff_frame"]
+
+    def __init__(self, clips_dir: str, out_csv: str = "data/annotations/takeoffs.csv",
+                 limit: int = 200, only_clips: list | None = None):
+        self.clips_dir = Path(clips_dir)
+        self.out_csv = Path(out_csv)
+        self.out_csv.parent.mkdir(parents=True, exist_ok=True)
+        self.limit = limit
+
+        all_clips = sorted(self.clips_dir.glob("*.mp4"))
+        if only_clips is not None:
+            order = {cid: i for i, cid in enumerate(only_clips)}
+            all_clips = sorted((c for c in all_clips if c.stem in order),
+                               key=lambda c: order[c.stem])
+        if not all_clips:
+            raise SystemExit(f"[takeoff] no matching .mp4 in {self.clips_dir}")
+
+        self._init_csv()
+        self.seen = self._load_seen()
+        self.saved_start = len(self.seen)
+        self.queue = [c for c in all_clips if c.stem not in self.seen][:limit]
+        self.idx = 0
+        self.session = 0
+        self.frames: list = []
+        if not self.queue:
+            print(f"[takeoff] all {len(all_clips)} clips already marked in {self.out_csv}")
+            return
+        self._build_widgets()
+
+    def _init_csv(self):
+        if not self.out_csv.exists() or self.out_csv.stat().st_size == 0:
+            with self.out_csv.open("w", newline="") as f:
+                csv.writer(f).writerow(self.HEADER)
+
+    def _load_seen(self) -> set:
+        seen = set()
+        with self.out_csv.open() as f:
+            for row in csv.DictReader(f):
+                seen.add(row["clip_id"])
+        return seen
+
+    def _append_row(self, clip_id, takeoff_frame) -> None:
+        with self.out_csv.open("a", newline="") as f:
+            csv.writer(f).writerow([clip_id, takeoff_frame])
+
+    def _build_widgets(self):
+        import ipywidgets as widgets
+
+        self.image = widgets.Image(format="jpeg", layout=widgets.Layout(width="600px"))
+        self.btn_mark = widgets.Button(description="Mark takeoff", button_style="success",
+                                       icon="check")
+        self.btn_skip = widgets.Button(description="Skip clip", icon="step-forward")
+        self.btn_quit = widgets.Button(description="Quit", button_style="danger", icon="times")
+        self.status = widgets.HTML(value="")
+        self.frame_readout = widgets.HTML(value="")
+        self.cur_frame = 0
+        self.frame_nav = _build_frame_nav(self.frame_readout, self._goto, self._step,
+                                          lambda: len(self.frames) - 1)
+
+        self.btn_mark.on_click(lambda _: self._save())
+        self.btn_skip.on_click(lambda _: self._skip())
+        self.btn_quit.on_click(lambda _: self._quit())
+        self.toolbar = widgets.HBox([self.btn_mark, self.btn_skip, self.btn_quit])
+
+    def _goto(self, i: int):
+        if not self.frames:
+            return
+        i = max(0, min(int(i), len(self.frames) - 1))
+        self.cur_frame = i
+        self.image.value = _jpeg_bytes(self.frames[i])
+        self.frame_readout.value = f"<b>{i} / {len(self.frames) - 1}</b>"
+
+    def _step(self, delta: int):
+        self._goto(self.cur_frame + delta)
+
+    def start(self):
+        from IPython.display import display
+        if not self.queue:
+            return
+        self._update_status()
+        display(self.status, self.image, self.frame_nav, self.toolbar)
+        self._show_clip()
+
+    def _show_clip(self):
+        if self.idx >= len(self.queue):
+            self.status.value = (f"<b>Done.</b> {len(self.seen)} takeoffs in "
+                                 f"<code>{self.out_csv}</code>.")
+            return
+        clip = self.queue[self.idx]
+        self.frames = _all_frames_bgr(clip)
+        if not self.frames:
+            self.idx += 1
+            self._show_clip()
+            return
+        self._goto(len(self.frames) // 2)
+        self._update_status()
+
+    def _update_status(self):
+        self.status.value = (
+            f"<b>&#9989; {self.session} marked this session</b> &nbsp;|&nbsp; "
+            f"{len(self.seen)} total in takeoffs.csv &nbsp;|&nbsp; "
+            f"clip {self.idx + 1}/{len(self.queue)} in queue &nbsp;|&nbsp; "
+            f"<code>{self.queue[self.idx].name}</code><br>"
+            f"scrub to the exact lift-off frame (hooves just leaving the ground), "
+            f"then click Mark takeoff")
+
+    def _save(self):
+        clip = self.queue[self.idx]
+        self._append_row(clip.stem, int(self.cur_frame))
+        self.seen = self._load_seen()
+        self.session = len(self.seen) - self.saved_start
+        self.idx += 1
+        self._show_clip()
+
+    def _skip(self):
+        self.idx += 1
+        self._show_clip()
+
+    def _quit(self):
+        self.status.value = (f"<b>Stopped.</b> {len(self.seen)} takeoffs in "
+                             f"<code>{self.out_csv}</code>.")
+        self.idx = len(self.queue)
+
+
 class OutcomeAnnotator:
     """Jump-outcome annotator {clean, knockdown, refusal} on plain ipywidgets."""
 
