@@ -2,10 +2,22 @@
 # One URL per line. Comments start with #.
 # Curate the list to favor side-view camera angles with full-fence visibility.
 #
-# Example (replace with real picks before scraping):
+# Provenance: these 6 videos span 3 physical venues. Four are Wellington
+# International from distinct competitions (different day, course, and riders),
+# so they share an arena/backdrop but not a class. For an honest cross-venue
+# test, group by VENUE rather than by video — holding out one Wellington video
+# still leaves three Wellington videos in train. Machine-readable map in
+# src/data/venues.py.
+
+# Tryon International
 https://www.youtube.com/watch?v=2S-4eXbehr4
+# Club de Campo Villa de Madrid
 https://www.youtube.com/watch?v=jtEeeuyIpLA
+# Wellington International (separate competition)
 https://www.youtube.com/watch?v=wCv2DYtxr5U
+# Wellington International (separate competition)
 https://www.youtube.com/watch?v=h5_V5GYf7iM
+# Wellington International (separate competition)
 https://www.youtube.com/watch?v=kZbGlTmo8Ds
+# Wellington International (separate competition)
 https://www.youtube.com/watch?v=ApvPWiz8nBM
