@@ -19,6 +19,76 @@ from src.preprocess.geometry import (
 )
 
 
+def render_truth_comparison(clips_dir: Path, tracks_path: Path, fences_path: Path,
+                            takeoffs_path: Path, out_path: Path,
+                            max_clips: int = 12) -> None:
+    """Side-by-side detected-vs-hand-marked takeoff frames, from cached tracks.
+
+    For every clip that has a fence box, a cached trajectory, and a ground-truth
+    takeoff, draws the detector's takeoff frame (horse box + fence box + d) beside
+    the human-marked frame, titled with both frame numbers and the error. Uses the
+    cached boxes in tracks.json, so it never re-runs YOLO.
+    """
+    import json
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    tracks = json.loads(Path(tracks_path).read_text())["clips"]
+    fences = pd.read_csv(fences_path)
+    fences["clip_id"] = fences["clip_id"].astype(str)
+    truth = pd.read_csv(takeoffs_path)
+    truth["clip_id"] = truth["clip_id"].astype(str)
+    fence_map = {r["clip_id"]: r for _, r in fences.iterrows()}
+    true_map = dict(zip(truth["clip_id"], truth["takeoff_frame"]))
+
+    ids = [c for c in true_map if c in tracks and c in fence_map][:max_clips]
+    if not ids:
+        print("[viz] no clips with fence + track + ground truth")
+        return
+
+    def grab(clip_id: str, fi: int):
+        cap = cv2.VideoCapture(str(Path(clips_dir) / f"{clip_id}.mp4"))
+        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+        cap.set(cv2.CAP_PROP_POS_FRAMES, min(max(int(fi), 0), n - 1))
+        ok, fr = cap.read()
+        cap.release()
+        return fr if ok else None
+
+    fig, axes = plt.subplots(len(ids), 2, figsize=(10, 3.4 * len(ids)))
+    axes = np.atleast_2d(axes)
+    for r, cid in enumerate(ids):
+        traj = [(int(b[0]), Box(b[1], b[2], b[3], b[4], score=b[5]))
+                for b in tracks[cid]["boxes"]]
+        row = fence_map[cid]
+        fence_box = Box(float(row["x1"]), float(row["y1"]),
+                        float(row["x2"]), float(row["y2"]), label="fence")
+        mpp = meters_per_pixel(fence_box)
+        det_fi = detect_takeoff_frame(traj)
+        true_fi = int(true_map[cid])
+        det_horse = min(traj, key=lambda x: abs(x[0] - det_fi))[1]
+        true_horse = min(traj, key=lambda x: abs(x[0] - true_fi))[1]
+        d = takeoff_distance(det_horse, fence_box, mpp)
+        for c, (fi, horse, tag) in enumerate([
+                (det_fi, det_horse, f"DETECTED f{det_fi}  d={d:.2f}m"),
+                (true_fi, true_horse, f"TRUE f{true_fi}  (err {det_fi - true_fi:+d})")]):
+            frame = grab(cid, fi)
+            ax = axes[r, c]
+            if frame is None:
+                ax.axis("off")
+                continue
+            _draw(frame, [(horse, (0, 200, 0), "horse"),
+                          (fence_box, (0, 100, 255), "fence")])
+            ax.imshow(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            ax.set_title(f"{cid}\n{tag}", fontsize=8)
+            ax.axis("off")
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=110)
+    print(f"[viz] wrote {out_path} ({len(ids)} clips)")
+
+
 def _draw(frame, boxes: list[tuple[Box, tuple[int, int, int], str]]):
     for b, color, label in boxes:
         x1, y1, x2, y2 = [int(v) for v in b.to_xyxy()]
