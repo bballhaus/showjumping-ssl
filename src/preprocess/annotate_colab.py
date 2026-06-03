@@ -389,8 +389,8 @@ class OutcomeAnnotator:
 
         all_clips = sorted(self.clips_dir.glob("*.mp4"))
         if only_clips is not None:
-            keep = set(only_clips)
-            all_clips = [c for c in all_clips if c.stem in keep]
+            by_stem = {c.stem: c for c in all_clips}
+            all_clips = [by_stem[s] for s in only_clips if s in by_stem]
         if not all_clips:
             raise SystemExit(f"[outcome] no matching .mp4 in {self.clips_dir}")
 
