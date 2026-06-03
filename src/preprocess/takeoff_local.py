@@ -31,6 +31,8 @@ from .geometry import (
     detect_takeoff_frame,
     meters_per_pixel,
     takeoff_distance,
+    takeoff_gap,
+    takeoff_observable,
 )
 from .run_pipeline import load_fence_annotations
 
@@ -63,11 +65,13 @@ def recompute(tracks_path: Path, fences_path: Path, out_csv: Path) -> pd.DataFra
             "mpp": float("nan"),
             "takeoff_frame": -1,
             "frac": float("nan"),
+            "takeoff_gap": -1,
         }
         if traj:
             takeoff_fi = detect_takeoff_frame(traj)
             row["takeoff_frame"] = takeoff_fi
             row["frac"] = takeoff_fi / _last_sampled_idx(entry, stride)
+            row["takeoff_gap"] = takeoff_gap(traj, takeoff_fi)
             ann = fences.get(clip_id)
             if ann is not None:
                 fence_box = ann["box"]
@@ -99,7 +103,15 @@ def regression_guard(df: pd.DataFrame) -> None:
           "WARN - still clustering at clip end")
 
 
-def score_against_truth(df: pd.DataFrame, takeoffs_path: Path) -> pd.DataFrame | None:
+def score_against_truth(df: pd.DataFrame, takeoffs_path: Path,
+                        tracks_path: Path | None = None) -> pd.DataFrame | None:
+    """Score detected takeoff frames against hand-marked ground truth.
+
+    Stratifies by whether the TRUE takeoff is observable in the horse track:
+    clips whose lift-off falls in a camera-cut gap or past the track edge are a
+    multi-camera-footage limitation, not a detector error, and dominate the
+    pooled error. The "ok" stratum is the fair test of the detector.
+    """
     if not takeoffs_path.exists():
         print(f"[score] no {takeoffs_path} yet - run TakeoffAnnotator to create ground truth")
         return None
@@ -111,12 +123,28 @@ def score_against_truth(df: pd.DataFrame, takeoffs_path: Path) -> pd.DataFrame |
         print("[score] no overlap between detections and ground truth")
         return None
     merged["err_frames"] = merged["takeoff_frame"] - merged["true_frame"]
-    bias = merged["err_frames"].mean()
-    mae = merged["err_frames"].abs().mean()
-    within2 = float((merged["err_frames"].abs() <= 2).mean())
-    print(f"[score] clips with ground truth: {len(merged)}")
-    print(f"[score] signed bias: {bias:+.2f} frames (negative = detector early)")
-    print(f"[score] mean abs error: {mae:.2f} frames | within +-2 frames: {within2:.0%}")
+
+    flags = {}
+    if tracks_path is not None and tracks_path.exists():
+        data = json.loads(tracks_path.read_text())
+        clips = data["clips"]
+        for cid, tf in zip(merged["clip_id"], merged["true_frame"]):
+            entry = clips.get(cid)
+            traj = _traj(entry) if entry else []
+            flags[cid] = takeoff_observable(traj, int(tf))[1] if traj else "sparse"
+    merged["flag"] = merged["clip_id"].map(flags).fillna("?")
+
+    def _row(sub: pd.DataFrame, name: str) -> None:
+        e = sub["err_frames"]
+        print(f"[score] {name:24s} n={len(sub):2d}  bias {e.mean():+.2f}  "
+              f"MAE {e.abs().mean():.2f}  within +-2 {(e.abs() <= 2).mean():.0%}")
+
+    _row(merged, "all clips")
+    ok = merged[merged["flag"] == "ok"]
+    if not ok.empty and len(ok) < len(merged):
+        _row(ok, "takeoff observable")
+        _row(merged[merged["flag"] != "ok"], "takeoff in cut/at edge")
+        print("[score] (observable = fair detector test; the rest are footage limits)")
     return merged
 
 
@@ -163,7 +191,7 @@ def main() -> None:
     df = recompute(args.tracks, args.fences, args.out)
     print(f"[takeoff_local] wrote {len(df)} rows -> {args.out}")
     regression_guard(df)
-    score_against_truth(df, args.takeoffs)
+    score_against_truth(df, args.takeoffs, tracks_path=args.tracks)
     plot_signals(args.tracks, args.plot)
 
 

@@ -20,7 +20,7 @@ import pandas as pd
 
 from .detect import Box, HorseDetector
 from .fence_type import classify_fence
-from .geometry import detect_takeoff_frame, meters_per_pixel, takeoff_distance
+from .geometry import detect_takeoff_frame, meters_per_pixel, takeoff_distance, takeoff_gap
 
 
 def load_fence_annotations(path: Path) -> dict[str, dict]:
@@ -67,24 +67,26 @@ def process_clip(clip_path: Path, detector: HorseDetector,
         "d_meters": float("nan"),
         "mpp": float("nan"),
         "takeoff_frame": -1,
+        "takeoff_gap": -1,
     }
     if not horse_traj:
         return row
+
+    takeoff_fi = detect_takeoff_frame(horse_traj)
+    row["takeoff_frame"] = takeoff_fi
+    row["takeoff_gap"] = takeoff_gap(horse_traj, takeoff_fi)
 
     pole_count = None
     if fence_ann is not None:
         fence_box: Box = fence_ann["box"]
         pole_count = fence_ann.get("pole_count")
     elif fence_detector is not None:
-        takeoff_fi = detect_takeoff_frame(horse_traj)
         fence_box = _auto_fence_box(clip_path, fence_detector, takeoff_fi)
         if fence_box is None:
             return row
     else:
         return row
     mpp = meters_per_pixel(fence_box)
-    takeoff_fi = detect_takeoff_frame(horse_traj)
-    # Pick horse box closest to takeoff frame.
     takeoff_horse = min(horse_traj, key=lambda x: abs(x[0] - takeoff_fi))[1]
     d = takeoff_distance(takeoff_horse, fence_box, mpp)
     ftype = classify_fence(fence_box, pole_count=pole_count)
@@ -93,7 +95,6 @@ def process_clip(clip_path: Path, detector: HorseDetector,
         "type": ftype,
         "d_meters": d,
         "mpp": mpp,
-        "takeoff_frame": takeoff_fi,
     })
     return row
 
