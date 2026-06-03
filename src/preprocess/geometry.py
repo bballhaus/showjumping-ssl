@@ -47,39 +47,41 @@ def takeoff_distance(horse_box: Box, fence_box: Box, mpp: float | None = None) -
     horse_hoof_y = horse_box.y2
     fence_base_x = fence_box.cx
     fence_base_y = fence_box.y2
-    # Pixel distance, biased toward horizontal (ground) component since we're in
-    # a near-side view. We use Euclidean rather than purely horizontal because
-    # the camera is rarely perfectly perpendicular to the line of travel.
     dx = horse_hoof_x - fence_base_x
     dy = horse_hoof_y - fence_base_y
     px_dist = float(np.hypot(dx, dy))
     return px_dist * mpp
 
 
+def _interior_smooth(ys: np.ndarray) -> np.ndarray:
+    """3-tap moving average that leaves the endpoints untouched.
+
+    Avoids the zero-padding boundary artifact of np.convolve(mode="same"),
+    which crushes the final sample and fakes a large downward jump there.
+    """
+    out = ys.astype(float).copy()
+    out[1:-1] = (ys[:-2] + ys[1:-1] + ys[2:]) / 3.0
+    return out
+
+
 def detect_takeoff_frame(horse_traj: list[tuple[int, Box]]) -> int:
-    """Find the frame where horse vertical position reverses (down -> up).
+    """Lift-off frame: the down->up reversal of the horse-box bottom edge.
+
+    The hoof line (box y2) stops descending (velocity >= 0) and starts rising
+    (velocity < 0); that sign-change frame is lift-off, returned in preference to
+    the steepest-rise frame, which sits mid-ascent and biases d low. Searches the
+    back half, where the approach pipeline places the jump. Falls back to the
+    middle frame for short tracks and to the sharpest rise when no clean reversal
+    is present.
 
     horse_traj: list of (frame_idx, Box) in temporal order.
-    Returns frame_idx of takeoff; falls back to middle frame if no clear turn.
     """
     if len(horse_traj) < 5:
         return horse_traj[len(horse_traj) // 2][0] if horse_traj else 0
-    ys = np.array([b.y2 for _, b in horse_traj])  # bottom of horse box: hoof line
-    # Interior-only 3-tap smoothing. np.convolve(mode="same") zero-pads the ends,
-    # which crushes the final sample and manufactures a huge fake downward jump
-    # there — that artifact would win the argmin and pin "takeoff" to the last
-    # frame of every clip.
-    ys_s = ys.astype(float).copy()
-    ys_s[1:-1] = (ys[:-2] + ys[1:-1] + ys[2:]) / 3.0
-    dy = np.diff(ys_s)  # +ve = box bottom moving down; -ve = moving up
-    # Takeoff is the down->up reversal: the hoof line stops descending (dy >= 0)
-    # and starts rising (dy < 0). That sign-change frame is lift-off. We return
-    # the peak frame itself, not argmin(dy), which sits mid-ascent and biases d
-    # low. Search the back half, where the approach pipeline places the jump.
+    ys = np.array([b.y2 for _, b in horse_traj])
+    dy = np.diff(_interior_smooth(ys))
     mid = len(dy) // 2
     reversals = [i for i in range(max(mid, 1), len(dy)) if dy[i] < 0 <= dy[i - 1]]
     if reversals:
-        # Pick the reversal with the strongest rise immediately after it.
         return horse_traj[min(reversals, key=lambda i: dy[i])][0]
-    # No clean reversal in the back half: fall back to the sharpest rise.
     return horse_traj[mid + int(np.argmin(dy[mid:]))][0]
