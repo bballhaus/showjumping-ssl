@@ -21,7 +21,7 @@ import csv
 from pathlib import Path
 
 from ..baselines.imagenet2d import ImageNet2DEncoder
-from ..downstream.split import make_split
+from ..downstream.split import leave_one_out_splits, make_split
 from ..downstream.train import run
 
 DEFAULT_NS = (25, 50, 100, 200)
@@ -47,7 +47,25 @@ def _run_method(method: str, labels_csv: Path, clips_dir: Path, ckpt: Path | Non
 
 def sweep(labels_csv: Path, clips_dir: Path, out_csv: Path, ckpt: Path | None = None,
           methods=METHODS, ns=DEFAULT_NS, seeds=(0, 1, 2), use_type: bool = True,
-          group_by_venue: bool = False, epochs: int = 30, device: str = "cuda") -> None:
+          group_by_venue: bool = False, val_venue: str | None = None,
+          epochs: int = 30, device: str = "cuda") -> None:
+    """Sample-efficiency sweep.
+
+    val_venue pins the val set to one held-out physical venue (e.g. "tryon" or
+    "madrid"), the honest cross-venue curve: the held-out backdrop never appears
+    in train, and n varies on the remaining venues. Leave it None for the
+    in-domain / group_by_venue behavior. val_venue overrides group_by_venue.
+    """
+    fixed_split = None
+    if val_venue is not None:
+        folds = {h: (tr, va) for h, tr, va in
+                 leave_one_out_splits(labels_csv, level="venue")}
+        if val_venue not in folds:
+            raise SystemExit(f"[sweep] val_venue '{val_venue}' not in {sorted(folds)}")
+        fixed_split = folds[val_venue]
+        print(f"[sweep] held-out venue={val_venue}: "
+              f"train={len(fixed_split[0])} val={len(fixed_split[1])}")
+
     fields = ["method", "n", "seed", "n_train", "n_val", "accuracy", "macro_f1",
               "d_mae", "d_mae_vertical", "d_mae_oxer"]
     out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +73,10 @@ def sweep(labels_csv: Path, clips_dir: Path, out_csv: Path, ckpt: Path | None = 
         w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         for seed in seeds:
-            train_ids, val_ids = make_split(labels_csv, group_by_venue=group_by_venue, seed=seed)
+            if fixed_split is not None:
+                train_ids, val_ids = fixed_split
+            else:
+                train_ids, val_ids = make_split(labels_csv, group_by_venue=group_by_venue, seed=seed)
             for n in ns:
                 for method in methods:
                     m = _run_method(method, labels_csv, clips_dir, ckpt, n, train_ids,
@@ -81,12 +102,15 @@ def main() -> None:
     ap.add_argument("--seeds", nargs="+", type=int, default=[0, 1, 2])
     ap.add_argument("--no-type", action="store_true")
     ap.add_argument("--group-by-venue", action="store_true")
+    ap.add_argument("--val-venue", type=str, default=None,
+                    help="Pin val to one held-out physical venue (honest cross-venue curve).")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--device", type=str, default="cuda")
     args = ap.parse_args()
     sweep(args.labels, args.clips, args.out, ckpt=args.ckpt, methods=tuple(args.methods),
           ns=tuple(args.ns), seeds=tuple(args.seeds), use_type=not args.no_type,
-          group_by_venue=args.group_by_venue, epochs=args.epochs, device=args.device)
+          group_by_venue=args.group_by_venue, val_venue=args.val_venue,
+          epochs=args.epochs, device=args.device)
 
 
 if __name__ == "__main__":
