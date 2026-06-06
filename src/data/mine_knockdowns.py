@@ -438,6 +438,13 @@ class RoiEditor:
         from IPython.display import display
         from jupyter_bbox_widget import BBoxWidget
 
+        try:
+            from google.colab import output as _colab_output
+
+            _colab_output.enable_custom_widget_manager()
+        except Exception:
+            pass
+
         if not self.frames:
             print(f"[RoiEditor] no frames decoded from {self.video}")
             return
