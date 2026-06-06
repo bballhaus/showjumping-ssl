@@ -11,7 +11,8 @@ across three files produced earlier in the pipeline:
 This module joins them on clip_id into a single labels.csv. A clip is included
 in the labeled set only if it has an outcome label (the supervised target);
 type/d are filled where available and left blank otherwise. Video is recovered
-from the clip_id prefix when by_video.csv is absent.
+from the clip_id prefix when by_video.csv is absent. A geometric d above 10 m is
+implausible (broken homography) and is nulled so it never enters the d target.
 """
 
 from __future__ import annotations
@@ -59,6 +60,9 @@ def build_labels(auto_csv: Path, outcomes_csv: Path, by_video_csv: Path | None,
         if col not in df.columns:
             df[col] = pd.NA
     df = df[LABEL_COLUMNS].drop_duplicates("clip_id").reset_index(drop=True)
+
+    d = pd.to_numeric(df["d_meters"], errors="coerce")
+    df["d_meters"] = d.where(d <= 10)
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out_csv, index=False)
