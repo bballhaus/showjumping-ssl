@@ -28,6 +28,7 @@ Two practical limits the broadcast imposes:
 from __future__ import annotations
 
 import argparse
+import shutil
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -109,6 +110,28 @@ class FaultReader:
         return best
 
 
+def _existing_clip_for(from_clips: Path, video_stem: str, t: float,
+                       clip_seconds: float, tol: float = 0.4) -> Path | None:
+    """Existing clip in `from_clips` whose window contains takeoff time `t`.
+
+    Keeps the mined positives identical to the rest of the labeled pool: rather
+    than re-cutting (which would make cut-procedure a knockdown shortcut), the
+    flagged takeoff is attached to the already-segmented clip that spans it. Clip
+    ids encode the start in ms, so a clip starting at s covers [s, s+clip_seconds];
+    the nearest-centered match within `tol` wins when windows overlap."""
+    best, best_d = None, float("inf")
+    for p in from_clips.glob(f"{video_stem}_*.mp4"):
+        tail = p.stem.rsplit("_", 1)[-1]
+        if not tail.isdigit():
+            continue
+        s = int(tail) / 1000.0
+        if s - tol <= t <= s + clip_seconds + tol:
+            d = abs(t - (s + clip_seconds / 2.0))
+            if d < best_d:
+                best, best_d = p, d
+    return best
+
+
 def _crop_roi(frame: np.ndarray, roi: tuple[float, float, float, float]) -> np.ndarray:
     h, w = frame.shape[:2]
     x1, y1, x2, y2 = roi
@@ -145,6 +168,7 @@ def mine_video(video: Path, reader: FaultReader, detector: HorseDetector,
                post_window: tuple[float, float] = (1.5, 5.0),
                min_stability: float = 0.5, restrict_plausible: bool = True,
                start_seconds: float = 0.0, max_seconds: float | None = None,
+               from_clips: Path | None = None, clip_seconds: float = 2.0,
                **find_kw) -> list[KnockdownCandidate]:
     """Detect takeoffs in one video, then flag those followed by a +4 fault step.
 
@@ -154,6 +178,12 @@ def mine_video(video: Path, reader: FaultReader, detector: HorseDetector,
     round total, and the step is a positive multiple of 4. Exactly +4 with high
     stability scores near 1.0; +8 (two rails, rare on one effort) and shakier
     reads score lower so the review queue sorts the surest knockdowns first.
+
+    With `from_clips` set, each hit's clip_id is resolved to the existing
+    `clip_seconds`-long clip that already spans the takeoff, so the mined
+    positives are the same files the clean labels were drawn from. Hits with no
+    spanning clip in the pool are dropped (they were never segmented). Without it,
+    the id is the fresh [t-before, t+after] window the caller may cut.
     """
     fps, frame_h, samples = _scan_horse_track(
         video, detector, sample_fps=sample_fps,
@@ -177,28 +207,39 @@ def mine_video(video: Path, reader: FaultReader, detector: HorseDetector,
             continue
         if min(pre_s, post_s) < min_stability:
             continue
-        clip_start = t - before
-        if clip_start < 0 or t + after > dur:
-            continue
+        if from_clips is not None:
+            match = _existing_clip_for(from_clips, video.stem, t, clip_seconds)
+            if match is None:
+                continue
+            clip_id = match.stem
+        else:
+            clip_start = t - before
+            if clip_start < 0 or t + after > dur:
+                continue
+            clip_id = f"{video.stem}_{int(clip_start * 1000):07d}"
         conf = min(pre_s, post_s) * (1.0 if delta == 4 else 0.6)
         out.append(KnockdownCandidate(
-            clip_id=f"{video.stem}_{int(clip_start * 1000):07d}", video=video.stem,
+            clip_id=clip_id, video=video.stem,
             takeoff_s=round(t, 3), fault_before=pre, fault_after=post,
             delta=delta, confidence=round(conf, 3)))
     cap.release()
     return out
 
 
-def mine(raw_dir: Path, out_csv: Path, clips_dir: Path | None = None,
+def mine(raw_dir: Path, out_csv: Path, out_clips: Path | None = None,
+         from_clips: Path | None = Path("data/clips"),
          weights: str = "yolov8m.pt", device: str = "cuda",
          before: float = 3.0, after: float = 1.0, limit_videos: int | None = None,
          **kw) -> pd.DataFrame:
     """Notebook entry point: mine every raw video for knockdown candidates.
 
-    Writes the candidate table sorted by descending confidence to `out_csv`. When
-    `clips_dir` is given, also cuts the flagged [t-before, t+after] clips so the
-    OutcomeAnnotator can be pointed straight at them with 'knockdown' pre-selected.
-    Videos with no configured SCORE_ROI are skipped with a warning.
+    Writes the candidate table sorted by descending confidence to `out_csv`. With
+    `from_clips` (default data/clips) the positives are resolved to the existing
+    labeled-pool clips that span each takeoff, and `out_clips` (e.g. data/knockdowns)
+    receives COPIES of those exact files for review — same id, same cut as the
+    clean clips, so the cut procedure can't become a knockdown shortcut and the
+    training pool already contains them. Set from_clips=None to instead cut fresh
+    [t-before, t+after] clips into out_clips. Videos with no SCORE_ROI are skipped.
     """
     raw_dir, out_csv = Path(raw_dir), Path(out_csv)
     vids = sorted(raw_dir.glob("*.mp4"))
@@ -206,6 +247,8 @@ def mine(raw_dir: Path, out_csv: Path, clips_dir: Path | None = None,
         vids = vids[:limit_videos]
     detector = HorseDetector(weights=weights, device=device)
     reader = FaultReader(device=device)
+    if out_clips is not None:
+        Path(out_clips).mkdir(parents=True, exist_ok=True)
 
     rows: list[dict] = []
     for v in tqdm(vids, desc="videos", unit="vid"):
@@ -213,13 +256,18 @@ def mine(raw_dir: Path, out_csv: Path, clips_dir: Path | None = None,
         if roi is None:
             tqdm.write(f"[mine_knockdowns] no SCORE_ROI for {v.stem}; skipping (run suggest_roi)")
             continue
-        cands = mine_video(v, reader, detector, roi, before=before, after=after, **kw)
+        cands = mine_video(v, reader, detector, roi, before=before, after=after,
+                           from_clips=from_clips, **kw)
         tqdm.write(f"[mine_knockdowns] {v.name}: {len(cands)} knockdown candidates")
         for c in cands:
             rows.append(c.__dict__)
-            if clips_dir is not None:
-                cut_clip(v, c.takeoff_s - before, before + after,
-                         Path(clips_dir) / f"{c.clip_id}.mp4")
+            if out_clips is None:
+                continue
+            dst = Path(out_clips) / f"{c.clip_id}.mp4"
+            if from_clips is not None:
+                shutil.copy(Path(from_clips) / f"{c.clip_id}.mp4", dst)
+            else:
+                cut_clip(v, c.takeoff_s - before, before + after, dst)
 
     df = pd.DataFrame(rows).sort_values("confidence", ascending=False) if rows else pd.DataFrame(
         columns=[f.name for f in KnockdownCandidate.__dataclass_fields__.values()])
@@ -262,8 +310,10 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", type=Path, default=Path("data/raw"))
     ap.add_argument("--out", type=Path, default=Path("data/annotations/knockdown_candidates.csv"))
-    ap.add_argument("--clips", type=Path, default=None,
-                    help="if set, cut the flagged clips here for the annotator")
+    ap.add_argument("--out-clips", type=Path, default=Path("data/knockdowns"),
+                    help="copy (or cut) the flagged clips here for the annotator")
+    ap.add_argument("--from-clips", type=Path, default=Path("data/clips"),
+                    help="existing labeled pool to draw positives from; pass '' to cut fresh")
     ap.add_argument("--weights", default="yolov8m.pt")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--before", type=float, default=3.0)
@@ -273,9 +323,11 @@ def main() -> None:
     ap.add_argument("--no-restrict-plausible", action="store_true",
                     help="accept any +4k step, not only plausible round totals")
     args = ap.parse_args()
-    mine(args.raw, args.out, clips_dir=args.clips, weights=args.weights, device=args.device,
-         before=args.before, after=args.after, limit_videos=args.limit_videos,
-         min_stability=args.min_stability, restrict_plausible=not args.no_restrict_plausible)
+    from_clips = args.from_clips if str(args.from_clips) else None
+    mine(args.raw, args.out, out_clips=args.out_clips, from_clips=from_clips,
+         weights=args.weights, device=args.device, before=args.before, after=args.after,
+         limit_videos=args.limit_videos, min_stability=args.min_stability,
+         restrict_plausible=not args.no_restrict_plausible)
 
 
 if __name__ == "__main__":
