@@ -32,6 +32,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -197,28 +198,58 @@ def _probe_duration(video: Path) -> float:
         return video_duration(Path(video))
 
 
-def _read_window(video: Path, reader: FaultReader, roi, t0: float, t1: float,
-                 step: float = 0.5) -> tuple[int | None, float]:
-    """Mode fault value over [t0, t1] plus the fraction of reads matching it.
-
-    Sampling several ffmpeg-grabbed frames and taking the mode tolerates
-    single-frame OCR misfires and brief overlay occlusion (a passing rail, motion
-    blur). The agreement fraction becomes the per-window stability that feeds
-    confidence. Step defaults to 0.5 s since the fault number holds steady for
-    seconds and each grab spawns ffmpeg."""
-    vals: list[int] = []
-    t = max(0.0, t0)
-    while t <= t1:
-        frame = _grab_frame(video, t)
-        if frame is not None:
-            v = reader.read_int(_crop_roi(frame, roi))
-            if v is not None:
-                vals.append(v)
-        t += step
+def _mode(vals: list[int]) -> tuple[int | None, float]:
+    """Most common value and the fraction of reads agreeing with it."""
     if not vals:
         return None, 0.0
     val, n = Counter(vals).most_common(1)[0]
     return val, n / len(vals)
+
+
+def _read_jump(video: Path, reader: FaultReader, roi, t: float,
+               pre_window: tuple[float, float], post_window: tuple[float, float],
+               step: float = 0.5) -> tuple[int | None, float, int | None, float]:
+    """Read the fault counter before and after takeoff `t` in one ffmpeg pass.
+
+    The whole [t+pre0, t+post1] span is extracted to a tiny temp clip with a
+    single ffmpeg call (decimated to 1/step fps), then read sequentially with
+    cv2 — far cheaper than the dozen per-frame Drive seeks the naive version did,
+    since ffmpeg is spawned once per jump instead of once per sampled frame. Each
+    decoded frame's offset from `t` routes its OCR'd value into the pre or post
+    bucket; the bucket mode + agreement fraction give (pre, pre_stability,
+    post, post_stability). Sampling several frames per bucket and taking the mode
+    tolerates single-frame OCR misfires and brief overlay occlusion."""
+    t0 = max(0.0, t + pre_window[0])
+    dur = max(step, (t + post_window[1]) - t0)
+    fps_out = max(1.0, 1.0 / step)
+    fd, tmp = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    cmd = ["ffmpeg", "-y", "-ss", f"{t0:.2f}", "-i", str(video), "-t", f"{dur:.2f}",
+           "-an", "-vf", f"fps={fps_out:g}", "-c:v", "libx264", "-preset", "ultrafast",
+           "-crf", "20", tmp]
+    res = subprocess.run(cmd, capture_output=True)
+    pre_vals: list[int] = []
+    post_vals: list[int] = []
+    if res.returncode == 0:
+        cap = cv2.VideoCapture(tmp)
+        i = 0
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            off = pre_window[0] + i / fps_out
+            v = reader.read_int(_crop_roi(frame, roi))
+            if v is not None:
+                if pre_window[0] <= off <= pre_window[1]:
+                    pre_vals.append(v)
+                elif post_window[0] <= off <= post_window[1]:
+                    post_vals.append(v)
+            i += 1
+        cap.release()
+    Path(tmp).unlink(missing_ok=True)
+    pre, pre_s = _mode(pre_vals)
+    post, post_s = _mode(post_vals)
+    return pre, pre_s, post, post_s
 
 
 def _candidates_for(video: Path, stem: str, reader: FaultReader, roi, times,
@@ -244,8 +275,7 @@ def _candidates_for(video: Path, stem: str, reader: FaultReader, roi, times,
     """
     out: list[KnockdownCandidate] = []
     for t in tqdm(sorted(times), desc=f"ocr {stem[:18]}", unit="jump", leave=False):
-        pre, pre_s = _read_window(video, reader, roi, t + pre_window[0], t + pre_window[1])
-        post, post_s = _read_window(video, reader, roi, t + post_window[0], t + post_window[1])
+        pre, pre_s, post, post_s = _read_jump(video, reader, roi, t, pre_window, post_window)
         if pre is None or post is None:
             continue
         delta = post - pre
