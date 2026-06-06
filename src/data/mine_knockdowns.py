@@ -446,6 +446,62 @@ def mine(raw_dir: Path, out_csv: Path, out_clips: Path | None = None,
     return df
 
 
+def debug_reads(video: Path, takeoffs: Path, n: int = 6, roi=None, device: str = "cuda",
+                out_dir: Path = Path("milestone/figures/roi_debug"), step: float = 0.5,
+                span: tuple[float, float] = (-2.0, 5.0), clip_fps: float = 16.0):
+    """Print the OCR'd fault value at each sampled frame around the first n jumps.
+
+    The fastest way to see why mining returned nothing. For each jump it extracts
+    the [t+span0, t+span1] segment, OCRs every sampled frame, prints the sequence
+    (offset=value, '.' for an unread frame), and saves one ROI crop + full frame to
+    out_dir for eyeballing. Reading it:
+      - all '.' (no values)  -> the box misses the digits, or the live counter is
+        not shown at jump time on this broadcast (use the end-of-round fallback).
+      - values that never step +4 -> no rails in these jumps, or the scoring delay
+        lands outside `span` (widen it).
+      - values present and a +4 visible -> the box is good; loosen min_stability.
+    """
+    video, out_dir = Path(video), Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if roi is None:
+        load_rois()
+        roi = SCORE_ROI.get(video.stem)
+    print(f"[debug_reads] {video.stem}  roi={roi}")
+    if roi is None:
+        print("  no ROI set for this video (run the editor first)")
+        return
+    reader = FaultReader(device=device)
+    times = sorted(_takeoff_times(takeoffs, clip_fps=clip_fps).get(video.stem, []))[:n]
+    fps_out = max(1.0, 1.0 / step)
+    for t in times:
+        t0 = max(0.0, t + span[0])
+        dur = max(step, (t + span[1]) - t0)
+        fd, tmp = tempfile.mkstemp(suffix=".mp4")
+        os.close(fd)
+        subprocess.run(["ffmpeg", "-y", "-ss", f"{t0:.2f}", "-i", str(video), "-t",
+                        f"{dur:.2f}", "-an", "-vf", f"fps={fps_out:g}", "-c:v", "libx264",
+                        "-preset", "ultrafast", "-crf", "20", tmp], capture_output=True)
+        cap = cv2.VideoCapture(tmp)
+        seq, i, saved = [], 0, False
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            off = span[0] + i / fps_out
+            crop = _crop_roi(frame, roi)
+            v = reader.read_int(crop)
+            seq.append(f"{off:+.1f}={v if v is not None else '.'}")
+            if not saved and off >= 2.0:
+                cv2.imwrite(str(out_dir / f"{video.stem}_t{int(t)}_crop.png"), crop)
+                cv2.imwrite(str(out_dir / f"{video.stem}_t{int(t)}_full.png"), frame)
+                saved = True
+            i += 1
+        cap.release()
+        Path(tmp).unlink(missing_ok=True)
+        print(f"  t={t:7.1f}s  " + "  ".join(seq))
+    print(f"[debug_reads] crops saved to {out_dir}")
+
+
 def suggest_roi(video: Path, out_dir: Path, at_seconds: tuple[float, ...] = (60, 120, 240),
                 roi: tuple[float, float, float, float] | None = None) -> list[Path]:
     """Dump full frames (and the candidate ROI crop) at a few times for ROI tuning.
