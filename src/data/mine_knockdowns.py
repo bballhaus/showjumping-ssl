@@ -28,6 +28,7 @@ Two practical limits the broadcast imposes:
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 from collections import Counter
 from dataclasses import dataclass
@@ -54,6 +55,34 @@ SCORE_ROI: dict[str, tuple[float, float, float, float]] = {
 }
 
 PLAUSIBLE_FAULTS = {0, 4, 8, 12, 16, 20, 24}
+
+ROI_STORE = Path("data/annotations/score_roi.json")
+
+
+def save_rois(path: Path = ROI_STORE) -> Path:
+    """Persist the configured boxes to JSON so they outlive the session.
+
+    In Colab data/ is symlinked to Drive, so this store survives a kernel restart
+    and the cell-0 `git reset --hard` that would wipe an in-source edit. The
+    editor calls this on every Save; mine() reloads it automatically."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(
+        {k: list(v) for k, v in SCORE_ROI.items() if v is not None}, indent=2))
+    return path
+
+
+def load_rois(path: Path = ROI_STORE) -> dict:
+    """Merge persisted boxes into SCORE_ROI; no-op when the store is absent.
+
+    The Drive-backed store wins over the module defaults so the latest tuning is
+    used without re-editing source. Returns the loaded mapping."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    SCORE_ROI.update({k: tuple(v) for k, v in data.items()})
+    return data
 
 
 @dataclass
@@ -243,6 +272,7 @@ def mine(raw_dir: Path, out_csv: Path, out_clips: Path | None = None,
     [t-before, t+after] clips into out_clips. Videos with no SCORE_ROI are skipped.
     """
     raw_dir, out_csv = Path(raw_dir), Path(out_csv)
+    load_rois()
     vids = sorted(raw_dir.glob("*.mp4"))
     if limit_videos:
         vids = vids[:limit_videos]
@@ -398,9 +428,10 @@ class RoiEditor:
         SCORE_ROI[self.stem] = roi
         self.roi = roi
         self._preview(roi)
+        store = save_rois()
         self.status.value = (f"<b style='color:#080'>SCORE_ROI['{self.stem}'] = {roi}</b>"
-                             "  &nbsp;(paste into mine_knockdowns.py to persist)")
-        print(f"SCORE_ROI['{self.stem}'] = {roi}")
+                             f"  &nbsp;saved to {store}")
+        print(f"SCORE_ROI['{self.stem}'] = {roi}  ->  {store}")
 
     def start(self) -> None:
         import ipywidgets as widgets
