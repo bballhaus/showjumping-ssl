@@ -40,6 +40,7 @@ from tqdm.auto import tqdm
 
 from src.data.segment import cut_clip, video_duration
 from src.data.segment_jumps import _scan_horse_track, find_takeoffs
+from src.preprocess.annotate_colab import _build_frame_nav, _jpeg_bytes, _jpeg_data_url
 from src.preprocess.detect import HorseDetector
 
 
@@ -304,6 +305,126 @@ def suggest_roi(video: Path, out_dir: Path, at_seconds: tuple[float, ...] = (60,
             written.append(pc)
     cap.release()
     return written
+
+
+def _sample_frames_bgr(video: Path, n: int = 40, start_s: float = 0.0,
+                       end_s: float | None = None):
+    """Evenly sample `n` frames across [start_s, end_s] of a long broadcast.
+
+    Full-class broadcasts run an hour or more, so decoding every frame (as the
+    clip annotators do) would exhaust memory. Seeking to evenly spaced indices
+    gives a scrubbable strip cheaply; narrow start_s/end_s to a single round to
+    sample densely where the fault counter is actually on screen."""
+    cap = cv2.VideoCapture(str(video))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    start_i = max(0, int(start_s * fps))
+    end_i = (total - 1) if end_s is None else min(total - 1, int(end_s * fps))
+    if end_i <= start_i:
+        end_i = max(start_i + 1, total - 1)
+    idxs = np.linspace(start_i, end_i, num=max(1, min(n, end_i - start_i)), dtype=int)
+    frames, times = [], []
+    for i in idxs:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
+        ok, f = cap.read()
+        if ok:
+            frames.append(f)
+            times.append(round(int(i) / fps, 1))
+    cap.release()
+    return frames, times
+
+
+class RoiEditor:
+    """Drag-a-box editor to set SCORE_ROI[video] interactively in Colab.
+
+    Scrub to a frame where the fault number is on screen, drag a tight box around
+    just the digits, and click Save: the box is converted to normalized
+    (x1, y1, x2, y2), written into the live SCORE_ROI dict, printed for pasting
+    into the module, and shown as a zoomed crop so you can confirm it isolates the
+    digits before mining. Built on the same BBoxWidget + button scrubber the fence
+    annotator uses, since Colab's widget manager won't render an IntSlider.
+
+    Usage:
+        ed = RoiEditor('data/raw/2S-4eXbehr4.mp4'); ed.start()
+        # drag, scrub, Save -> SCORE_ROI['2S-4eXbehr4'] is set
+    """
+
+    CLASSES = ["score"]
+
+    def __init__(self, video, n: int = 40, start_s: float = 0.0,
+                 end_s: float | None = None):
+        self.video = Path(video)
+        self.stem = self.video.stem
+        self.frames, self.times = _sample_frames_bgr(self.video, n=n,
+                                                      start_s=start_s, end_s=end_s)
+        self.cur = 0
+        self.roi = SCORE_ROI.get(self.stem)
+
+    def _current_box(self):
+        if not self.bbox.bboxes:
+            return None
+        b = self.bbox.bboxes[0]
+        h, w = self.frames[self.cur].shape[:2]
+        x1, y1 = b["x"] / w, b["y"] / h
+        return (round(x1, 4), round(y1, 4),
+                round(x1 + b["width"] / w, 4), round(y1 + b["height"] / h, 4))
+
+    def _preview(self, roi) -> None:
+        import ipywidgets as widgets
+
+        crop = _crop_roi(self.frames[self.cur], roi)
+        self.preview.value = _jpeg_bytes(crop) if crop.size else b""
+
+    def _goto(self, i: int) -> None:
+        i = max(0, min(int(i), len(self.frames) - 1))
+        self.cur = i
+        self.bbox.image = _jpeg_data_url(self.frames[i])
+        if self.roi is not None:
+            h, w = self.frames[i].shape[:2]
+            x1, y1, x2, y2 = self.roi
+            self.bbox.bboxes = [{"x": int(x1 * w), "y": int(y1 * h),
+                                 "width": int((x2 - x1) * w), "height": int((y2 - y1) * h),
+                                 "label": "score"}]
+        self.readout.value = f"<b>{i}/{len(self.frames) - 1}</b> &nbsp; t={self.times[i]}s"
+
+    def _step(self, d: int) -> None:
+        self._goto(self.cur + d)
+
+    def _save(self, *_) -> None:
+        roi = self._current_box()
+        if roi is None:
+            self.status.value = "<b style='color:#c00'>draw a box first</b>"
+            return
+        SCORE_ROI[self.stem] = roi
+        self.roi = roi
+        self._preview(roi)
+        self.status.value = (f"<b style='color:#080'>SCORE_ROI['{self.stem}'] = {roi}</b>"
+                             "  &nbsp;(paste into mine_knockdowns.py to persist)")
+        print(f"SCORE_ROI['{self.stem}'] = {roi}")
+
+    def start(self) -> None:
+        import ipywidgets as widgets
+        from IPython.display import display
+        from jupyter_bbox_widget import BBoxWidget
+
+        if not self.frames:
+            print(f"[RoiEditor] no frames decoded from {self.video}")
+            return
+        self.bbox = BBoxWidget(classes=self.CLASSES)
+        self.readout = widgets.HTML()
+        self.status = widgets.HTML()
+        self.preview = widgets.Image(format="jpeg")
+        btn_prev = widgets.Button(description="Preview crop", icon="search")
+        btn_save = widgets.Button(description="Save ROI", button_style="success", icon="check")
+        btn_prev.on_click(lambda _: (self._current_box() and self._preview(self._current_box())))
+        btn_save.on_click(self._save)
+        nav = _build_frame_nav(self.readout, self._goto, self._step, lambda: len(self.frames) - 1)
+
+        self._goto(len(self.frames) // 2)
+        display(widgets.HTML(f"<h4>ROI editor — {self.stem}</h4>"
+                             "Scrub to a frame showing the fault number, box the digits, Save."),
+                nav, self.bbox, widgets.HBox([btn_prev, btn_save]), self.status,
+                widgets.HTML("crop preview:"), self.preview)
 
 
 def main() -> None:
