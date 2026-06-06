@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,19 +169,47 @@ def _crop_roi(frame: np.ndarray, roi: tuple[float, float, float, float]) -> np.n
     return frame[int(y1 * h):int(y2 * h), int(x1 * w):int(x2 * w)]
 
 
-def _read_window(cap, reader: FaultReader, roi, t0: float, t1: float, fps: float,
-                 step: float = 0.25) -> tuple[int | None, float]:
+def _grab_frame(video: Path, t: float):
+    """Decode the single frame at time `t` via ffmpeg `-ss` input seeking.
+
+    cv2's frame-index seeking returns nothing on a Google Drive FUSE mount (Colab
+    streams the file and can't random-access it), so any non-sequential read must
+    go through ffmpeg, whose container-index seek works over Drive. The frame is
+    piped as PNG and decoded in-memory — no temp files."""
+    cmd = ["ffmpeg", "-y", "-ss", f"{max(0.0, t):.2f}", "-i", str(video),
+           "-frames:v", "1", "-f", "image2pipe", "-vcodec", "png", "pipe:1"]
+    res = subprocess.run(cmd, capture_output=True)
+    if res.returncode != 0 or not res.stdout:
+        return None
+    return cv2.imdecode(np.frombuffer(res.stdout, np.uint8), cv2.IMREAD_COLOR)
+
+
+def _probe_duration(video: Path) -> float:
+    """Container duration via ffprobe, robust over Drive where cv2's frame count
+    can read back as zero. Falls back to the cv2 estimate if ffprobe is absent."""
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+           "-of", "csv=p=0", str(video)]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        return float(res.stdout.strip())
+    except ValueError:
+        return video_duration(Path(video))
+
+
+def _read_window(video: Path, reader: FaultReader, roi, t0: float, t1: float,
+                 step: float = 0.5) -> tuple[int | None, float]:
     """Mode fault value over [t0, t1] plus the fraction of reads matching it.
 
-    Sampling several frames and taking the mode tolerates single-frame OCR
-    misfires and brief overlay occlusion (a passing rail, motion blur). The
-    agreement fraction becomes the per-window stability that feeds confidence."""
+    Sampling several ffmpeg-grabbed frames and taking the mode tolerates
+    single-frame OCR misfires and brief overlay occlusion (a passing rail, motion
+    blur). The agreement fraction becomes the per-window stability that feeds
+    confidence. Step defaults to 0.5 s since the fault number holds steady for
+    seconds and each grab spawns ffmpeg."""
     vals: list[int] = []
     t = max(0.0, t0)
     while t <= t1:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(t * fps))
-        ok, frame = cap.read()
-        if ok:
+        frame = _grab_frame(video, t)
+        if frame is not None:
             v = reader.read_int(_crop_roi(frame, roi))
             if v is not None:
                 vals.append(v)
@@ -221,13 +250,11 @@ def mine_video(video: Path, reader: FaultReader, detector: HorseDetector,
     events = find_takeoffs(samples, frame_h, before=before, after=after, **find_kw)
     dur = video_duration(video)
 
-    cap = cv2.VideoCapture(str(video))
-    native_fps = cap.get(cv2.CAP_PROP_FPS) or fps or 25.0
     out: list[KnockdownCandidate] = []
     for ev in tqdm(events, desc=f"ocr {video.stem[:18]}", unit="jump", leave=False):
         t = ev.time
-        pre, pre_s = _read_window(cap, reader, roi, t + pre_window[0], t + pre_window[1], native_fps)
-        post, post_s = _read_window(cap, reader, roi, t + post_window[0], t + post_window[1], native_fps)
+        pre, pre_s = _read_window(video, reader, roi, t + pre_window[0], t + pre_window[1])
+        post, post_s = _read_window(video, reader, roi, t + post_window[0], t + post_window[1])
         if pre is None or post is None:
             continue
         delta = post - pre
@@ -252,7 +279,6 @@ def mine_video(video: Path, reader: FaultReader, detector: HorseDetector,
             clip_id=clip_id, video=video.stem,
             takeoff_s=round(t, 3), fault_before=pre, fault_after=post,
             delta=delta, confidence=round(conf, 3)))
-    cap.release()
     return out
 
 
@@ -341,26 +367,22 @@ def _sample_frames_bgr(video: Path, n: int = 40, start_s: float = 0.0,
                        end_s: float | None = None):
     """Evenly sample `n` frames across [start_s, end_s] of a long broadcast.
 
-    Full-class broadcasts run an hour or more, so decoding every frame (as the
-    clip annotators do) would exhaust memory. Seeking to evenly spaced indices
-    gives a scrubbable strip cheaply; narrow start_s/end_s to a single round to
-    sample densely where the fault counter is actually on screen."""
-    cap = cv2.VideoCapture(str(video))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-    start_i = max(0, int(start_s * fps))
-    end_i = (total - 1) if end_s is None else min(total - 1, int(end_s * fps))
-    if end_i <= start_i:
-        end_i = max(start_i + 1, total - 1)
-    idxs = np.linspace(start_i, end_i, num=max(1, min(n, end_i - start_i)), dtype=int)
+    Full-class broadcasts run hours, so frames are grabbed by ffmpeg seek rather
+    than decoded in bulk (memory) or cv2-seeked (which returns nothing on a Drive
+    mount). Narrow start_s/end_s to a single round to sample densely where the
+    fault counter is actually on screen."""
+    dur = _probe_duration(video)
+    start = max(0.0, start_s)
+    end = dur if end_s is None else min(end_s, dur)
+    if end <= start:
+        end = max(start + 1.0, dur)
+    ts = np.linspace(start, max(start, end - 0.5), num=max(1, n))
     frames, times = [], []
-    for i in idxs:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
-        ok, f = cap.read()
-        if ok:
+    for t in ts:
+        f = _grab_frame(video, float(t))
+        if f is not None:
             frames.append(f)
-            times.append(round(int(i) / fps, 1))
-    cap.release()
+            times.append(round(float(t), 1))
     return frames, times
 
 
