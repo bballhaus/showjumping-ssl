@@ -116,9 +116,3 @@ python -m src.viz.make_figures --csv data/annotations/auto.csv --labels data/ann
 `--group-by-venue` holds out entire source videos for validation — the honest cross-venue
 split the project calls for. Drop it for the easier stratified split (which leaks venue cues
 and inflates scores; `src.eval.cross_venue --test A` measures exactly that gap).
-
-## Building the deliverables
-
-**Final report** — source in [`final_overleaf/`](final_overleaf/) (CVPR 2026 template, self-contained). Upload the whole folder to Overleaf and set the main document to `main.tex`, or compile locally with a full TeX Live (`pdflatex → bibtex → pdflatex ×2`). The milestone report lives in `milestone_overleaf/` (`milestone.tex`).
-
-**Demo deck** — `presentation/` holds the `.pptx` plus `build.js` and the figure scripts that regenerate its accuracy/outcome charts.
