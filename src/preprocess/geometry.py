@@ -154,3 +154,4 @@ def takeoff_observable(horse_traj: list[tuple[int, Box]], frame: int,
     if takeoff_gap(horse_traj, frame) > max_gap:
         return False, "gap"
     return True, "ok"
+

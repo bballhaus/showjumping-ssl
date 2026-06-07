@@ -84,3 +84,4 @@ class HorseDetector:
             idx += 1
         cap.release()
         return out
+

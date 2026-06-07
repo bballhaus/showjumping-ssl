@@ -24,3 +24,4 @@ def classify_fence(box: Box, pole_count: int | None = None) -> str:
         return "oxer" if pole_count >= 2 else "vertical"
     ratio = box.w / max(box.h, 1.0)
     return "oxer" if ratio > 1.5 else "vertical"
+

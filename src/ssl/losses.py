@@ -32,3 +32,4 @@ class TemporalOrderHead(nn.Module):
 
     def forward(self, f: torch.Tensor) -> torch.Tensor:
         return self.net(f)
+

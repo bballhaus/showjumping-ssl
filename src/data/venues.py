@@ -22,3 +22,4 @@ VIDEO_VENUE = {
 
 def venue_of(video_id: str) -> str:
     return VIDEO_VENUE.get(str(video_id), "unknown")
+

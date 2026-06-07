@@ -183,3 +183,4 @@ def _save_grid(images: list[Path], out_path: Path, cols: int = 2) -> None:
 
 if __name__ == "__main__":
     main()
+

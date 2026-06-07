@@ -51,3 +51,4 @@ class DomainHead(nn.Module):
 
     def forward(self, f: torch.Tensor, lambd: float = 1.0) -> torch.Tensor:
         return self.net(grad_reverse(f, lambd))
+

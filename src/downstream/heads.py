@@ -47,3 +47,4 @@ class DistanceHead(nn.Module):
     def forward(self, feat: torch.Tensor, type_onehot: torch.Tensor) -> torch.Tensor:
         x = torch.cat([feat, type_onehot], dim=1) if self.use_type else feat
         return self.net(x).squeeze(-1)
+

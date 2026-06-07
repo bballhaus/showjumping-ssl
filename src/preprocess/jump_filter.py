@@ -65,7 +65,7 @@ def score_clip(traj: list[tuple[int, Box]], frame_count: int, stride: int) -> di
 
 
 def rank(tracks_path: Path, out_csv: Path,
-         min_coverage: float = 0.5, max_gap: int = 4, min_lift: float = 0.04,
+         min_coverage: float = 0.5, max_gap: int = 4, min_lift: float = 0.03,
          min_air: int = 2, max_size_cv: float = 0.6) -> pd.DataFrame:
     data = json.loads(tracks_path.read_text())
     stride = int(data.get("stride", 2))
@@ -107,7 +107,7 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=Path("data/annotations/jump_candidates.csv"))
     ap.add_argument("--min-coverage", type=float, default=0.5)
     ap.add_argument("--max-gap", type=int, default=4)
-    ap.add_argument("--min-lift", type=float, default=0.04)
+    ap.add_argument("--min-lift", type=float, default=0.03)
     ap.add_argument("--min-air", type=int, default=2)
     ap.add_argument("--max-size-cv", type=float, default=0.6)
     args = ap.parse_args()
@@ -124,3 +124,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

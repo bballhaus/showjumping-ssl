@@ -511,3 +511,4 @@ class OutcomeAnnotator:
         self.status.value = (f"<b>Stopped.</b> {len(self.seen)} outcomes in "
                              f"<code>{self.out_csv}</code>.")
         self.idx = len(self.queue)
+

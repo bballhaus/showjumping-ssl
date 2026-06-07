@@ -68,3 +68,4 @@ class LabeledClipDataset(Dataset):
             "d_valid": torch.tensor(1.0 if pd.notna(d) else 0.0, dtype=torch.float32),
             "clip_id": str(r["clip_id"]),
         }
+

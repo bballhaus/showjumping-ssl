@@ -116,3 +116,4 @@ python -m src.viz.make_figures --csv data/annotations/auto.csv --labels data/ann
 `--group-by-venue` holds out entire source videos for validation — the honest cross-venue
 split the project calls for. Drop it for the easier stratified split (which leaks venue cues
 and inflates scores; `src.eval.cross_venue --test A` measures exactly that gap).
+

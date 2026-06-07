@@ -58,3 +58,4 @@ def d_mae(d_true, d_pred, valid=None, types=None) -> dict:
             out[f"d_mae_{t}"] = (float(np.abs(d_true[mt] - d_pred[mt]).mean())
                                  if mt.sum() else float("nan"))
     return out
+

@@ -33,3 +33,4 @@ class R2Plus1DEncoder(nn.Module):
         f = self.features(x)
         z = self.projector(f)
         return nn.functional.normalize(z, dim=-1)
+
