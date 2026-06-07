@@ -74,7 +74,7 @@ def _load_dataset(clips_dir: Path, fences_csv: Path):
         pc = r.get("pole_count")
         if pd.isna(pc):
             continue
-        label = 1 if int(pc) >= 2 else 0  # oxer=1, vertical=0
+        label = 1 if int(pc) >= 2 else 0
         clip = clips_dir / f"{r['clip_id']}.mp4"
         if not clip.exists():
             continue
@@ -99,7 +99,6 @@ def train(clips_dir: Path, fences_csv: Path, out_path: Path, epochs: int = 40,
 
     model = _build_model().to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    # Class weights for the vertical/oxer imbalance.
     counts = torch.bincount(y[tr_idx], minlength=2).float().clamp(min=1)
     w = (counts.sum() / counts).to(device)
 

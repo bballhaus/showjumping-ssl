@@ -25,14 +25,11 @@ def read_sources(path: Path) -> list[str]:
 
 def download_one(url: str, out_dir: Path) -> Path | None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    # 720p mp4 keeps disk + decode cheap. yt-dlp picks the best matching format.
-    # Don't capture output — yt-dlp's native progress bar streams to the parent
-    # process so the user sees download progress live.
     cmd = [
         "yt-dlp",
         "-f", "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]",
         "--merge-output-format", "mp4",
-        "--newline",  # play nicer with Jupyter line buffering
+        "--newline",
         "-o", str(out_dir / "%(id)s.%(ext)s"),
         url,
     ]

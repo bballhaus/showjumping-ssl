@@ -13,11 +13,11 @@ def info_nce(z1: torch.Tensor, z2: torch.Tensor, tau: float = 0.1) -> torch.Tens
     z1, z2: (B, D), already L2-normalized.
     """
     B = z1.size(0)
-    z = torch.cat([z1, z2], dim=0)            # (2B, D)
-    sim = z @ z.t() / tau                     # (2B, 2B)
+    z = torch.cat([z1, z2], dim=0)
+    sim = z @ z.t() / tau
     sim.fill_diagonal_(-1e4)
     targets = torch.arange(2 * B, device=z.device)
-    targets = (targets + B) % (2 * B)         # positive partner is offset by B
+    targets = (targets + B) % (2 * B)
     return F.cross_entropy(sim, targets)
 
 

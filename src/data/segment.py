@@ -35,9 +35,9 @@ def cut_clip(src: Path, start_s: float, dur_s: float, out: Path) -> bool:
         "-ss", f"{start_s:.2f}",
         "-i", str(src),
         "-t", f"{dur_s:.2f}",
-        "-an",  # drop audio — saves space, we don't use it
-        "-vf", "scale=320:-2",  # shrink for SSL pretraining
-        "-r", "16",  # 16 fps -> 32 frames per 2s clip
+        "-an",
+        "-vf", "scale=320:-2",
+        "-r", "16",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "23",

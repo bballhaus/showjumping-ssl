@@ -12,7 +12,7 @@ import pandas as pd
 def plot(csv_path: Path, out_path: Path) -> None:
     df = pd.read_csv(csv_path)
     df = df.dropna(subset=["d_meters"])
-    df = df[df["d_meters"].between(0.5, 4.0)]  # reasonable physical range
+    df = df[df["d_meters"].between(0.5, 4.0)]
     if df.empty:
         print(f"[d_dist] no usable rows in {csv_path}")
         return

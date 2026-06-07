@@ -48,7 +48,6 @@ def run_ablations(labels_csv: Path, clips_dir: Path, out_csv: Path,
         w = csv.DictWriter(f, fieldnames=FIELDS, extrasaction="ignore")
         w.writeheader()
 
-        # 1. Type conditioning on/off.
         if type_ckpt is not None:
             for seed in seeds:
                 for use_type in (True, False):
@@ -56,7 +55,6 @@ def run_ablations(labels_csv: Path, clips_dir: Path, out_csv: Path,
                             seed=seed, **common)
                     _emit(w, f, "type_cond", "with_type" if use_type else "no_type", seed, m)
 
-        # 2. Pretext-task variants.
         for name, ckpt in ckpts.items():
             for seed in seeds:
                 m = run(ckpt=ckpt, finetune=False, use_type=True, seed=seed, **common)

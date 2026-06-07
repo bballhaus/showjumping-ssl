@@ -35,11 +35,6 @@ from .heads import DistanceHead, OutcomeHead
 from .split import make_split, subsample_train
 
 
-# Process-global cache: {encoder_key: {clip_id: feature vector}}. Frozen-encoder
-# features are deterministic, so a clip is decoded+encoded at most once per
-# encoder across the whole process — the sample-efficiency / ablation sweeps call
-# run() dozens of times with the same few encoders, so this is the dominant
-# speedup. Never populated for fine-tuned or random-init runs (see _cache_key).
 _FEAT_CACHE: dict[str, dict[str, torch.Tensor]] = {}
 
 
@@ -113,7 +108,6 @@ def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
     if len(tr) == 0 or len(va) == 0:
         raise SystemExit(f"[downstream] empty split (train={len(tr)}, val={len(va)})")
 
-    # Injected encoder (baselines) or one of the R(2+1)D init paths.
     enc = encoder if encoder is not None else load_encoder(
         ckpt if ckpt else Path("///none"), device, kinetics_init=kinetics_init)
     enc = enc.to(device)
@@ -126,7 +120,6 @@ def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
     cls_head = OutcomeHead(enc.feat_dim, use_type=use_type).to(device) if do_cls else None
     reg_head = DistanceHead(enc.feat_dim, use_type=use_type).to(device) if do_reg else None
 
-    # Class-weighted CE for the outcome imbalance.
     counts = torch.tensor(tr.class_counts(), dtype=torch.float32).clamp(min=1)
     cls_w = (counts.sum() / counts).to(device)
 
@@ -171,7 +164,6 @@ def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
                 _step(fx.to(device), fty.to(device), fy.to(device),
                       fd.to(device), fdv.to(device))
 
-    # Evaluate.
     enc.eval()
     if cls_head is not None:
         cls_head.eval()

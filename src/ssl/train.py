@@ -50,7 +50,6 @@ def train(clips_dir: Path, out_dir: Path, epochs: int = 20, batch_size: int = 16
     total_steps = epochs * max(1, len(dl))
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps)
 
-    # fp16 autocast roughly halves activation memory on the T4, the main OOM lever.
     use_amp = str(device).startswith("cuda")
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
@@ -72,8 +71,6 @@ def train(clips_dir: Path, out_dir: Path, epochs: int = 20, batch_size: int = 16
                 shuf_y = batch["shuffle_y"].to(device, non_blocking=True)
 
                 with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-                    # Compute view_a features once and reuse for both the contrastive
-                    # projection and the domain head, sparing one R(2+1)D forward pass.
                     if domain_head is not None:
                         f_a = encoder.features(view_a)
                         z_a = nn.functional.normalize(encoder.projector(f_a), dim=-1)

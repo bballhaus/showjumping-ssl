@@ -14,7 +14,6 @@ def plot_curves(log_csv: Path, out_path: Path) -> None:
     if df.empty:
         print(f"[curve] {log_csv} is empty")
         return
-    # Per-epoch averages for a smoother plot.
     by_epoch = df.groupby("epoch")[["loss_contrastive", "loss_order", "loss_total"]].mean()
 
     fig, ax = plt.subplots(figsize=(6, 4))

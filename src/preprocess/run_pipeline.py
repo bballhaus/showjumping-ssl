@@ -57,7 +57,6 @@ def process_clip(clip_path: Path, detector: HorseDetector,
     for fi, boxes in horses:
         if not boxes:
             continue
-        # Take the highest-confidence horse box per sampled frame.
         horse_traj.append((fi, max(boxes, key=lambda b: b.score)))
 
     row = {

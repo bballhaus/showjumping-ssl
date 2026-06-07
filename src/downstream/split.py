@@ -76,7 +76,6 @@ def make_split(labels_csv, val_frac: float = 0.25, group_by_venue: bool = False,
         return (df.loc[~val_mask, "clip_id"].tolist(),
                 df.loc[val_mask, "clip_id"].tolist())
 
-    # Stratified by outcome.
     train_ids, val_ids = [], []
     for _, grp in df.groupby("outcome"):
         ids = grp["clip_id"].tolist()

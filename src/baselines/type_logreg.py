@@ -22,7 +22,6 @@ from ..eval.metrics import classification_report
 
 
 def _features(df: pd.DataFrame) -> np.ndarray:
-    # 2-dim type one-hot; unknown type -> all zeros.
     X = np.zeros((len(df), len(TYPES)), dtype=np.float32)
     for i, t in enumerate(df["type"].tolist()):
         if isinstance(t, str) and t in TYPES:

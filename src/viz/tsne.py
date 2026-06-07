@@ -34,8 +34,6 @@ def plot_tsne(emb_npz: Path, annotations_csv: Path | None, color_by: str,
     if annotations_csv is not None and annotations_csv.exists():
         ann = pd.read_csv(annotations_csv)
         if color_by in ann.columns:
-            # Drop null labels and cast to str so a NaN (float) and real string
-            # labels never land in the same sorted() — that mix raises TypeError.
             ann = ann[ann[color_by].notna()]
             stem_to_label = dict(zip(ann["clip_id"], ann[color_by].astype(str)))
             labels = [stem_to_label.get(Path(p).stem, "unknown") for p in paths]

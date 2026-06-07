@@ -99,7 +99,6 @@ class ColabAnnotator:
             return
         self._build_widgets()
 
-    # -- CSV plumbing --------------------------------------------------------
 
     def _init_csv(self):
         if not self.out_csv.exists() or self.out_csv.stat().st_size == 0:
@@ -109,9 +108,6 @@ class ColabAnnotator:
         self._migrate_header()
 
     def _migrate_header(self):
-        # A legacy fences.csv may predate the `frame` column. Rewrite it onto the
-        # current HEADER (filling missing columns) so header and rows never disagree
-        # and downstream pd.read_csv doesn't choke on ragged rows.
         with self.out_csv.open(newline="") as f:
             rows = list(csv.reader(f))
         if not rows:
@@ -144,7 +140,6 @@ class ColabAnnotator:
             csv.writer(f).writerow([clip_id, round(x1, 1), round(y1, 1),
                                     round(x2, 1), round(y2, 1), pole_count, frame])
 
-    # -- UI ------------------------------------------------------------------
 
     def _build_widgets(self):
         import ipywidgets as widgets
@@ -165,8 +160,6 @@ class ColabAnnotator:
         self.toolbar = widgets.HBox([self.btn_quit])
 
     def _goto(self, i: int):
-        # IntSlider doesn't render under Colab's custom widget manager, so frames
-        # are stepped with buttons that drive this index instead.
         if not self.frames:
             return
         i = max(0, min(int(i), len(self.frames) - 1))
@@ -220,7 +213,7 @@ class ColabAnnotator:
         pole_count = 2 if b.get("label") == "oxer" else 1
         clip = self.queue[self.idx]
         self._append_row(clip.stem, (x1, y1, x2, y2), pole_count, int(self.cur_frame))
-        self.seen = self._load_seen()  # re-read so the counter reflects rows actually on disk
+        self.seen = self._load_seen()
         self.session = len(self.seen) - self.saved_start
         self.idx += 1
         self._show_clip()
@@ -501,7 +494,7 @@ class OutcomeAnnotator:
     def _save(self, outcome: str):
         clip = self.queue[self.idx]
         self._append_row(clip.stem, outcome)
-        self.seen = self._load_seen()  # re-read so the counter reflects rows actually on disk
+        self.seen = self._load_seen()
         self.session = len(self.seen) - self.saved_start
         self.idx += 1
         self._show_clip()

@@ -46,7 +46,6 @@ def _read_video_frames(path: Path, n_frames: int = 16, size: int = 112) -> np.nd
         frames.append(decoded[min(i, len(decoded) - 1)])
 
     arr = np.stack(frames, axis=0)
-    # Center-crop / resize.
     out = np.empty((n_frames, size, size, 3), dtype=np.uint8)
     import cv2
     for i, f in enumerate(arr):
@@ -77,14 +76,11 @@ def _augment_clip(frames: np.ndarray, rng: random.Random,
     palette as a shortcut. `color_jitter` scales the strength (0 disables it).
     """
     out = frames.copy()
-    # Horizontal flip.
     if rng.random() < 0.5:
         out = out[:, :, ::-1, :]
     f = out.astype(np.float32)
-    # Global brightness.
     f *= rng.uniform(0.8, 1.2)
     if color_jitter > 0:
-        # Per-channel color gain (palette shift) + contrast around the mean.
         gains = np.array([rng.uniform(1 - color_jitter, 1 + color_jitter)
                           for _ in range(3)], dtype=np.float32)
         f *= gains.reshape(1, 1, 1, 3)
@@ -129,12 +125,8 @@ class SSLClipDataset(Dataset):
         view_a = _to_chw(_augment_clip(frames, rng))
         view_b = _to_chw(_augment_clip(frames, rng))
 
-        # Temporal-order task: take 3 non-overlapping sub-clips and shuffle.
-        # We re-read the clip at slightly different frame indices for variety.
-        # For simplicity, we slice the already-decoded frames.
         idx_starts = [0, self.n_frames // 3, 2 * self.n_frames // 3]
         subs = [frames[s:s + self.sub_T] for s in idx_starts]
-        # Pad if too short.
         subs = [s if len(s) == self.sub_T else np.pad(s, ((0, self.sub_T - len(s)), (0, 0), (0, 0), (0, 0)))
                 for s in subs]
         perm_idx = rng.randrange(len(self.PERMUTATIONS))

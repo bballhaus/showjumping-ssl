@@ -26,7 +26,7 @@ def macro_f1(y_true: np.ndarray, y_pred: np.ndarray, n_classes: int = len(OUTCOM
         fp = np.sum((y_pred == c) & (y_true != c))
         fn = np.sum((y_pred != c) & (y_true == c))
         if tp + fp + fn == 0:
-            continue  # class absent from both -> undefined, skip
+            continue
         prec = tp / (tp + fp) if tp + fp else 0.0
         rec = tp / (tp + fn) if tp + fn else 0.0
         f1s.append(2 * prec * rec / (prec + rec) if prec + rec else 0.0)

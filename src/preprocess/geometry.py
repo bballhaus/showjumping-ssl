@@ -25,8 +25,6 @@ from .detect import Box
 
 POLE_LENGTH_M = 3.5
 
-# A rise counts as a takeoff candidate if it reaches this fraction of the
-# steepest rise in the clip; among those we keep the last (the final push-off).
 TAKEOFF_RISE_FRAC = 0.6
 
 

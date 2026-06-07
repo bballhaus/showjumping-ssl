@@ -18,7 +18,7 @@ import cv2
 import numpy as np
 
 
-HORSE_CLASS_ID = 17  # COCO
+HORSE_CLASS_ID = 17
 
 
 @dataclass
@@ -54,7 +54,6 @@ class HorseDetector:
     """Lightweight wrapper around Ultralytics YOLOv8 for horse detection."""
 
     def __init__(self, weights: str = "yolov8n.pt", conf: float = 0.35, device: str = "cpu"):
-        # Import lazily so the rest of the codebase can be imported without ultralytics.
         from ultralytics import YOLO
         self.model = YOLO(weights)
         self.conf = conf

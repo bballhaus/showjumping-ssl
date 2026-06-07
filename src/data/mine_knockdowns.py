@@ -337,7 +337,7 @@ def _takeoff_times(csv_path: Path, clip_fps: float = 16.0) -> dict[str, list[flo
     are dropped when that column is present."""
     df = pd.read_csv(csv_path)
     if "is_jump" in df.columns:
-        df = df[df["is_jump"] == True]  # noqa: E712 - pandas mask, not identity
+        df = df[df["is_jump"] == True]
     out: dict[str, list[float]] = {}
     for cid, tf in zip(df["clip_id"].astype(str), df["takeoff_frame"]):
         head, _, tail = cid.rpartition("_")
