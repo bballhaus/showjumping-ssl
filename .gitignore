@@ -1,21 +1,13 @@
-# Large / regenerable model artifacts — keep them on Drive, never on GitHub.
 runs/
 checkpoints/
 *.pt
 *.pth
 *.onnx
-
-# LaTeX build artifacts.
-milestone_overleaf/*.aux
-milestone_overleaf/*.log
-milestone_overleaf/*.out
-milestone_overleaf/*.toc
-milestone_overleaf/*.fls
-milestone_overleaf/*.fdb_latexmk
-milestone_overleaf/*.synctex.gz
-milestone_overleaf/milestone.pdf
-
-# Python.
+milestone_overleaf/
+milestone/
+final_overleaf/
+presentation/
+*.zip
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -23,11 +15,7 @@ __pycache__/
 .venv/
 venv/
 .env
-
-# OS junk.
 .DS_Store
 Thumbs.db
-
-# Editor.
 .vscode/
 .idea/
