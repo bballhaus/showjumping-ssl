@@ -6,6 +6,12 @@ Supports the experimental knobs the project needs:
   - n_labels: train on a subset (drives the sample-efficiency curves)
   - use_type: type conditioning on/off (the type-conditioning ablation)
 
+Frozen encoders cache their per-clip features (see `_FEAT_CACHE`): the feature
+vector is deterministic, so it is computed once per (encoder, clip) and reused
+across every epoch and every sweep run, turning the sweeps' dominant cost
+(re-decoding + re-encoding clips 30x per run) into a single pass. Fine-tuned runs
+change the encoder each step and so decode per epoch as before.
+
 `run(...)` returns a metrics dict so the sweep/ablation drivers can call it
 directly; the CLI just prints/saves that dict.
 """
@@ -17,21 +23,75 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 
 from ..eval.metrics import classification_report, d_mae
 from ..ssl.embed import load_encoder
-from .dataset import OUTCOMES, TYPES, LabeledClipDataset
+from .dataset import OUTCOME_TO_IDX, OUTCOMES, TYPES, LabeledClipDataset, type_onehot
 from .heads import DistanceHead, OutcomeHead
 from .split import make_split, subsample_train
+
+
+# Process-global cache: {encoder_key: {clip_id: feature vector}}. Frozen-encoder
+# features are deterministic, so a clip is decoded+encoded at most once per
+# encoder across the whole process — the sample-efficiency / ablation sweeps call
+# run() dozens of times with the same few encoders, so this is the dominant
+# speedup. Never populated for fine-tuned or random-init runs (see _cache_key).
+_FEAT_CACHE: dict[str, dict[str, torch.Tensor]] = {}
 
 
 def _type_str(onehot: torch.Tensor) -> str:
     if onehot.sum() == 0:
         return "unknown"
     return TYPES[int(onehot.argmax())]
+
+
+def _cache_key(ckpt, kinetics_init, encoder, n_frames, size) -> str | None:
+    """Stable key for a frozen encoder, or None when its weights are not
+    reproducible (random init) and therefore must not be cached across runs."""
+    if ckpt is not None:
+        base = f"ckpt:{ckpt}"
+    elif kinetics_init:
+        base = "kinetics"
+    elif encoder is not None:
+        base = f"enc:{type(encoder).__name__}"
+    else:
+        return None
+    return f"{base}|nf{n_frames}|sz{size}"
+
+
+def _ensure_features(enc, labels_csv, clips_dir, clip_ids, device, key,
+                     n_frames, size) -> dict[str, torch.Tensor]:
+    """{clip_id: feature vector} for clip_ids, decoding+encoding only the clips
+    not already cached under `key`. key=None disables the cache (always recompute)."""
+    store = _FEAT_CACHE.setdefault(key, {}) if key is not None else {}
+    missing = [c for c in clip_ids if c not in store]
+    if missing:
+        ds = LabeledClipDataset(labels_csv, clips_dir, clip_ids=missing,
+                                n_frames=n_frames, size=size)
+        dl = DataLoader(ds, batch_size=8, shuffle=False, num_workers=2)
+        enc.eval()
+        with torch.no_grad():
+            for b in dl:
+                feats = enc.features(b["x"].to(device)).cpu()
+                for cid, fv in zip(b["clip_id"], feats):
+                    store[str(cid)] = fv
+    return store
+
+
+def _assemble(df: pd.DataFrame, feats: dict[str, torch.Tensor]):
+    """Stack cached features + labels in df order into training tensors."""
+    ids = df["clip_id"].astype(str).tolist()
+    X = torch.stack([feats[c] for c in ids])
+    y = torch.tensor([OUTCOME_TO_IDX[o] for o in df["outcome"]], dtype=torch.long)
+    ty = torch.stack([type_onehot(t) for t in df["type"]])
+    dv = pd.to_numeric(df["d_meters"], errors="coerce")
+    d = torch.tensor([float(v) if pd.notna(v) else 0.0 for v in dv], dtype=torch.float32)
+    d_valid = torch.tensor([1.0 if pd.notna(v) else 0.0 for v in dv], dtype=torch.float32)
+    return X, y, ty, d, d_valid
 
 
 def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
@@ -52,8 +112,6 @@ def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
     va = LabeledClipDataset(labels_csv, clips_dir, clip_ids=val_ids)
     if len(tr) == 0 or len(va) == 0:
         raise SystemExit(f"[downstream] empty split (train={len(tr)}, val={len(va)})")
-    tr_dl = DataLoader(tr, batch_size=batch_size, shuffle=True, num_workers=2, drop_last=False)
-    va_dl = DataLoader(va, batch_size=batch_size, shuffle=False, num_workers=2)
 
     # Injected encoder (baselines) or one of the R(2+1)D init paths.
     enc = encoder if encoder is not None else load_encoder(
@@ -81,29 +139,37 @@ def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
         params += list(enc.parameters())
     opt = torch.optim.AdamW(params, lr=lr, weight_decay=1e-4)
 
-    for _ in range(epochs):
-        enc.train(finetune)
-        for b in tr_dl:
-            x = b["x"].to(device)
-            ty = b["type_onehot"].to(device)
-            with torch.set_grad_enabled(finetune):
-                feat = enc.features(x)
-            if not finetune:
-                feat = feat.detach()
-            loss = torch.zeros((), device=device)
-            if cls_head is not None:
-                logits = cls_head(feat, ty)
-                loss = loss + nn.functional.cross_entropy(
-                    logits, b["y_outcome"].to(device), weight=cls_w)
-            if reg_head is not None:
-                pred = reg_head(feat, ty)
-                d = b["d"].to(device)
-                valid = b["d_valid"].to(device)
-                if valid.sum() > 0:
-                    loss = loss + (((pred - d) ** 2) * valid).sum() / valid.sum()
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
+    def _step(feat, ty, y_outcome, d, d_valid):
+        loss = torch.zeros((), device=device)
+        if cls_head is not None:
+            loss = loss + nn.functional.cross_entropy(cls_head(feat, ty), y_outcome, weight=cls_w)
+        if reg_head is not None and d_valid.sum() > 0:
+            pred = reg_head(feat, ty)
+            loss = loss + (((pred - d) ** 2) * d_valid).sum() / d_valid.sum()
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+
+    feats: dict | None = None
+    if finetune:
+        tr_dl = DataLoader(tr, batch_size=batch_size, shuffle=True, num_workers=2, drop_last=False)
+        for _ in range(epochs):
+            enc.train(True)
+            for b in tr_dl:
+                feat = enc.features(b["x"].to(device))
+                _step(feat, b["type_onehot"].to(device), b["y_outcome"].to(device),
+                      b["d"].to(device), b["d_valid"].to(device))
+    else:
+        key = _cache_key(ckpt, kinetics_init, encoder, tr.n_frames, tr.size)
+        feats = _ensure_features(enc, labels_csv, clips_dir,
+                                 list(dict.fromkeys(train_ids + val_ids)), device, key,
+                                 tr.n_frames, tr.size)
+        X, y, ty, d, dv = _assemble(tr.df, feats)
+        tr_dl = DataLoader(TensorDataset(X, y, ty, d, dv), batch_size=batch_size, shuffle=True)
+        for _ in range(epochs):
+            for fx, fy, fty, fd, fdv in tr_dl:
+                _step(fx.to(device), fty.to(device), fy.to(device),
+                      fd.to(device), fdv.to(device))
 
     # Evaluate.
     enc.eval()
@@ -113,18 +179,33 @@ def run(labels_csv: Path, clips_dir: Path, ckpt: Path | None = None,
         reg_head.eval()
     y_true, y_pred, types, d_true, d_pred, d_valid = [], [], [], [], [], []
     with torch.no_grad():
-        for b in va_dl:
-            x = b["x"].to(device)
-            ty = b["type_onehot"].to(device)
-            feat = enc.features(x)
-            types += [_type_str(o) for o in b["type_onehot"]]
+        if finetune:
+            for b in DataLoader(va, batch_size=batch_size, shuffle=False, num_workers=2):
+                feat = enc.features(b["x"].to(device))
+                ty = b["type_onehot"].to(device)
+                types += [_type_str(o) for o in b["type_onehot"]]
+                if cls_head is not None:
+                    y_pred += cls_head(feat, ty).argmax(1).cpu().tolist()
+                    y_true += b["y_outcome"].tolist()
+                if reg_head is not None:
+                    d_pred += reg_head(feat, ty).cpu().tolist()
+                    d_true += b["d"].tolist()
+                    d_valid += b["d_valid"].tolist()
+        else:
+            X, y, ty, d, dv = _assemble(va.df, feats)
+            for i in range(0, len(X), batch_size):
+                fx = X[i:i + batch_size].to(device)
+                fty = ty[i:i + batch_size].to(device)
+                types += [_type_str(o) for o in ty[i:i + batch_size]]
+                if cls_head is not None:
+                    y_pred += cls_head(fx, fty).argmax(1).cpu().tolist()
+                if reg_head is not None:
+                    d_pred += reg_head(fx, fty).cpu().tolist()
             if cls_head is not None:
-                y_pred += cls_head(feat, ty).argmax(1).cpu().tolist()
-                y_true += b["y_outcome"].tolist()
+                y_true += y.tolist()
             if reg_head is not None:
-                d_pred += reg_head(feat, ty).cpu().tolist()
-                d_true += b["d"].tolist()
-                d_valid += b["d_valid"].tolist()
+                d_true += d.tolist()
+                d_valid += dv.tolist()
 
     metrics: dict = {"n_train": len(tr), "n_val": len(va)}
     if cls_head is not None:
