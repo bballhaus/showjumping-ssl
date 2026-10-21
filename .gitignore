@@ -20,3 +20,22 @@ Thumbs.db
 .vscode/
 .idea/
 
+
+# Large / regenerable data (README says these are ignored)
+data/raw/
+data/clips/
+data/fence_yolo/
+data/embeddings.npz
+data/annotations/outcomes.csv
+data/annotations/labels.csv
+data/annotations/scan_cache.json
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+*.m4a
+*.part
+*.ytdl
+cookies.txt
+*.cookies

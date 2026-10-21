@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Predicting Showjumping Outcomes with Self-Supervised Video Representations"
+authors:
+  - family-names: Ballhaus
+    given-names: Brooke
+date-released: 2026-06-08
+repository-code: "https://github.com/bballhaus/showjumping-ssl"
+license: MIT
+abstract: "A Stanford CS 131 project that pretrains a self-supervised R(2+1)D-18 video encoder on takeoff-anchored showjumping broadcast clips, with a venue-balanced sampler and domain-adversarial head to counter the venue confound, and fine-tunes it to predict jump outcome and takeoff distance."
