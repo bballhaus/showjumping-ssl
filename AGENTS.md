@@ -31,11 +31,24 @@ data/
   annotations/ fences.csv, takeoffs.csv, tracks.json, auto.csv, auto_clean.csv, by_video.csv
   results/     ablations.csv, sample_efficiency.csv, train_log.csv, takeoff_local/, jumps_local/
 final_deliverables/  proposal, milestone, final report PDFs and demo-day .pptx
+tests/         test_smoke.py (CPU-only smoke tests)
+.github/workflows/tests.yml  (CI)
 requirements.txt
 ```
-There are no tests, no packaging (setup.py/pyproject), and no CI. The README's "Layout"
-block is out of date (it shows a `project/` root and `final_overleaf/`, `presentation/`,
-`milestone_overleaf/` folders that are not in this repo); trust the tree above.
+No packaging (setup.py/pyproject).
+
+## Tests and CI
+- `tests/test_smoke.py`: pytest smoke tests that run on CPU in ~5 s with no network, GPU,
+  or video. They import the main modules, run a forward pass of the R(2+1)D encoder with
+  random weights (`kinetics_init=False`, no download) on a tiny random clip, run the SSL,
+  outcome and `d` heads plus metrics on random features, and exercise takeoff geometry,
+  `takeoff_local.recompute`, `src.data.labels.build_labels` and the split helpers on rows
+  from the committed annotation files (read-only; all outputs go to `tmp_path`).
+- Run locally from the repo root: install CPU torch/torchvision
+  (`--index-url https://download.pytorch.org/whl/cpu`), then `pip install -r requirements.txt pytest`,
+  then `python -m pytest -q`.
+- CI: `.github/workflows/tests.yml` runs the same on push and pull_request to `main`
+  (ubuntu-latest, Python 3.11). Keep tests CPU-only and free of downloads.
 
 ## Setup
 - Python, run from the repo root; every module is invoked as `python -m src.<pkg>.<module>`.
